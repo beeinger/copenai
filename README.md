@@ -1,0 +1,156 @@
+# copenai
+
+OpenAI-compatible HTTP API backed by the Cursor agent CLI (`cursor agent acp`).
+
+Drop-in for OpenAI SDKs: point `base_url` at copenai, use a wrapper API key from `copenai keys add`. Cursor credentials stay separate (`copenai auth login` or `CURSOR_API_KEY`).
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/beeinger/copenai/main/install.sh | bash
+```
+
+Requires Rust and the Cursor agent CLI on `PATH`.
+
+Data directory: `~/.copenai` (override with `COPENAI_HOME`).
+
+## Quick start
+
+```bash
+copenai doctor
+copenai auth login          # or: copenai auth api-key --key "$CURSOR_API_KEY"
+copenai keys add --name dev
+copenai start
+```
+
+Default server: `http://127.0.0.1:9241`
+
+## OpenAI compatibility & test coverage
+
+Single reference for what works, how it maps to OpenAI, what does not, and where it is tested.
+
+| Area | OpenAI surface | Parity | How copenai implements it | Not supported / limits | Tests |
+|------|----------------|--------|---------------------------|------------------------|-------|
+| **Auth** | `Authorization: Bearer …` on `/v1/*` | ✅ Same header shape | Wrapper keys (`sk-copenai-…`) in SQLite; validated per request | Keys are **not** OpenAI platform keys — generate via `copenai keys add` | `chat_mock::missing_bearer_401`, `e2e_16` |
+| **Health** | *(extension)* | ➕ Extra | `GET /health` — no auth; reports cursor auth, active sessions, resume mode | Not part of OpenAI API | `e2e_01`, `chat_mock::health_no_auth` |
+| **Models** | `GET /v1/models` | ✅ List shape | `object: list`, `data[].id/object/created/owned_by` | Model list is **configured** (`composer-2.5`, `auto`), not fetched from OpenAI; unknown model → **400** | `e2e_01`, `e2e_15`, `model::tests` |
+| **Chat sync** | `POST /v1/chat/completions` | ✅ | Standard JSON body; `chat.completion` response with `choices[].message.content`, `usage` | Backend is Cursor agent, not OpenAI models | `chat_mock::chat_sync_mock`, `e2e_02` |
+| **Chat stream** | `stream: true` → SSE | ✅ | `text/event-stream`; `chat.completion.chunk` deltas + final `finish_reason` + `[DONE]` | Chunks come from live ACP `AgentMessageChunk`, not fake token split | `chat_mock::stream_mock_emits_chunks`, `e2e_03` |
+| **Messages** | `messages[]` roles | ✅ Mostly | `system` + `developer` merged; `user`/`assistant` history replayed on **cold** session; hot session uses ACP memory | History replay is **text-only** (multimodal prior turns not re-sent); unknown roles skipped | `messages::tests` (4), `e2e_04`, `e2e_06`, `e2e_07` |
+| **Conversation id** | Threads / Assistants API elsewhere | ⚠️ Different hook | `X-Conversation-Id` header or `metadata.conversation_id`; auto UUID if omitted | OpenAI `user` field is **abuse metadata only**, not conversation routing | `e2e_19` |
+| **Session continuity** | Stateful threads via separate API | ⚠️ Extension | ACP `load` / `resume` / degraded replay; `cursor_chat_id` in SQLite; hot session skips replay **only** for incremental turns (empty prefix `messages[]`) | Full `messages[]` always replayed when client sends prior turns | `resume::tests`, `messages::tests`, `e2e_04`, `e2e_18`, `e2e_19` |
+| **Sampling** | `temperature`, `max_tokens` | ⚠️ Conditional | Forwarded via ACP `SetSessionConfigOption` when agent exposes matching option ids | If agent lacks option → **400** (not silently ignored) | `e2e_08`, `e2e_09` |
+| **Other sampling** | `top_p`, penalties, `seed`, `n`, `logprobs`, `response_format`, … | ❌ | Request fields accepted in JSON but **not forwarded** to ACP | Cursor ACP has no OpenAI-equivalent knobs | — |
+| **Usage** | `usage.{prompt,completion,total}_tokens` | ⚠️ Best-effort | ACP `UsageUpdate` when agent sends it; else char÷4 estimate | Counts may differ from OpenAI tokenizer | `e2e_02` |
+| **Finish reason** | `stop`, `length`, `content_filter`, `tool_calls` | ⚠️ Partial | Mapped from ACP completion (`stop`, `length`, `content_filter`) | No `tool_calls` finish reason (tools unsupported) | streaming path in `sse::tests` |
+| **Tool calling** | `tools`, `tool_choice`, `functions`, `function_call` | ❌ | **501** with explicit error body | Cursor ACP does not expose OpenAI function-calling protocol | `chat_mock::tools_returns_501`, `e2e_17` |
+| **Multimodal image** | `image_url` content parts | ✅ | `data:` URLs + `http(s)://` download → session assets → ACP image blocks | No `file://`; remote images ≤ 20 MB; must be `image/*` | `e2e_10`, `e2e_12`, `multimodal::tests` |
+| **Multimodal file** | `input_file` / `file` + `file_id` | ✅ | Stage via `/v1/files`, copy into session assets for ACP | Agent must accept file attachments | `e2e_10`, `e2e_11` |
+| **Multimodal audio** | `input_audio` inline base64 | ✅ | Decode to temp file (e.g. `.wav`) → ACP audio block | Agent capability-dependent; not OpenAI `/v1/audio` API | `e2e_11` |
+| **Files upload** | `POST /v1/files` multipart | ⚠️ Partial | Returns `id`, `object`, `bytes`, `filename` | No `purpose`, fine-tune, or batch semantics | `e2e_10`, `e2e_14` |
+| **Files metadata** | `GET /v1/files/{id}` | ⚠️ Partial | `id`, `object`, `bytes` | Missing OpenAI fields (`purpose`, `status`, timestamps, …) | `e2e_14` |
+| **Files content** | `GET /v1/files/{id}/content` | ✅ | Raw `application/octet-stream` | Local staging only (not cloud storage) | `e2e_14` |
+| **Files list/delete** | `GET /v1/files`, `DELETE /v1/files/{id}` | ✅ | List: `object`, `data[]`, `first_id`, `last_id`, `has_more`; delete: `id`, `object`, `deleted` | `purpose` query ignored; upload has no `purpose` field; local staging only | `chat_mock::files_*`, `files::tests`, `e2e_14` |
+| **Permissions** | *(extension)* | ➕ Extra | `GET /v1/permissions/pending`, `POST /v1/permissions/{id}/respond`; optional webhook when `auto_approve = false` | Cursor agent permission UX, not OpenAI | manual / config |
+| **Other OpenAI APIs** | Embeddings, Images, Audio transcribe/TTS, Assistants, Batches, Fine-tuning, Moderations, … | ❌ | Catch-all **501** `endpoint not implemented` | Out of scope — wrapper targets chat + minimal files | — |
+| **Errors** | `{ "error": { "message", "type", "code" } }` | ✅ | OpenAI-shaped JSON errors; proper HTTP status (401, 400, 404, 501, 500) | Message text is copenai-specific | mock + e2e error cases |
+| **CLI / daemon** | — | ➕ Extra | `copenai doctor`, `auth`, `keys`, `start/stop/status`, `logs` | Process management is local-only | `core::daemon::tests`, `paths::tests` |
+
+### Test layers
+
+| Layer | Command | Cursor needed | What it covers |
+|-------|---------|---------------|----------------|
+| **Unit** | `cargo test --all --all-features` (CI on every push) | No | Message parsing, files validation, SSE framing, resume probe, API keys, multimodal mapping, skip harness |
+| **Mock HTTP** | `cargo test -p copenai-server --features test-utils --test chat_mock` | No | Health, sync chat, SSE chunks, 401, tools 501, files list/delete — `MockSupervisor` backend |
+| **Live E2E** | `COPENAI_E2E=1 cargo test -p copenai-e2e -- --ignored --test-threads=1 --show-output` | Yes (login or `CURSOR_API_KEY`) | 17 scenarios: chat, stream, roles, sampling, files, multimodal, errors, model switch, conv-id semantics |
+| **Status probe** | `cargo test -p copenai-e2e live_e2e_status` | No | Always runs; prints READY/SKIPPED + reason (visible on TTY) |
+| **Nightly E2E** | `.github/workflows/e2e.yml` | Optional secret | Same live suite; skips pass if no auth |
+
+Live E2E skips (pass, no fail) when `COPENAI_E2E≠1` or agent not authenticated — not silent; see `live_e2e_status` and `SKIP` lines with `--show-output`.
+
+## OpenAI SDK example
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:9241/v1",
+    api_key="sk-copenai-...",  # from `copenai keys add`
+)
+
+client.chat.completions.create(
+    model="composer-2.5",
+    messages=[{"role": "user", "content": "hello"}],
+    extra_headers={"X-Conversation-Id": "my-thread-1"},
+)
+```
+
+## CLI
+
+| Command | Description |
+|---------|-------------|
+| `copenai doctor` | Versions, cursor auth, ACP resume capabilities |
+| `copenai auth login` | Browser login via `cursor agent login` |
+| `copenai auth api-key` | Store `CURSOR_API_KEY` in `~/.copenai/cursor.env` |
+| `copenai keys add/list/delete` | Wrapper API keys |
+| `copenai start/stop/status` | Background daemon |
+| `copenai logs -f` | Tail `~/.copenai/logs/server.log` |
+
+## Config
+
+`~/.copenai/config.toml`:
+
+```toml
+[cursor]
+agent_bin = "agent"
+
+[server]
+bind = "0.0.0.0:9241"
+max_concurrent_agents = 32
+idle_timeout_secs = 1800
+
+[permissions]
+auto_approve = true
+webhook_url = ""
+webhook_timeout_secs = 30
+```
+
+## Examples
+
+### Files + vision
+
+```bash
+curl -H "Authorization: Bearer $KEY" -F file=@image.png http://127.0.0.1:9241/v1/files
+```
+
+```json
+{
+  "model": "composer-2.5",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "What's in this image?"},
+      {"type": "input_file", "file_id": "file-..."}
+    ]
+  }]
+}
+```
+
+### Inline audio
+
+```json
+{
+  "type": "input_audio",
+  "input_audio": {"data": "<base64>", "format": "wav"}
+}
+```
+
+### Permissions (`auto_approve = false`)
+
+- `GET /v1/permissions/pending?conversation_id=...`
+- `POST /v1/permissions/{id}/respond` with `{"option_id": "..."}` or `{"cancel": true}`
+- Optional `webhook_url` POST on new permission requests
+
+## License
+
+MIT — see [LICENSE](LICENSE).

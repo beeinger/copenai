@@ -1,0 +1,38 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# Local env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# SQLite / runtime data (if created in-tree during dev)
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# Logs
+*.log
+/logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Test / coverage
+coverage/
+lcov.info
+*.profraw

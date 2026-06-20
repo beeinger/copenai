@@ -1,0 +1,23 @@
+[package]
+name = "copenai-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-stream.workspace = true
+base64.workspace = true
+chrono.workspace = true
+copenai-core.workspace = true
+futures.workspace = true
+mime_guess.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

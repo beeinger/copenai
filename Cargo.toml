@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/copenai-core",
+    "crates/copenai-store",
+    "crates/copenai-acp",
+    "crates/copenai-openai",
+    "crates/copenai-server",
+    "crates/copenai-cli",
+    "crates/copenai-e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/beeinger/copenai"
+
+[workspace.dependencies]
+anyhow = "1"
+async-stream = "0.3"
+axum = { version = "0.8", features = ["multipart"] }
+base64 = "0.22"
+bcrypt = "0.17"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+mime_guess = "2"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono"] }
+thiserror = "2"
+toml = "0.8"
+libc = "0.2"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+agent-client-protocol = "0.15.0"
+
+copenai-core = { path = "crates/copenai-core" }
+copenai-store = { path = "crates/copenai-store" }
+copenai-acp = { path = "crates/copenai-acp" }
+copenai-openai = { path = "crates/copenai-openai" }
+copenai-server = { path = "crates/copenai-server" }
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -1,0 +1,24 @@
+name: E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Cursor agent CLI
+        run: |
+          if ! command -v agent; then
+            echo "agent CLI not on PATH — live e2e tests will skip"
+            exit 0
+          fi
+      - name: Live E2E (skip if no Cursor auth)
+        run: COPENAI_E2E=1 cargo test -p copenai-e2e -- --ignored --test-threads=1 --show-output
+        env:
+          # Optional: use secret for headless CI. Without it, tests skip unless agent is logged in.
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
