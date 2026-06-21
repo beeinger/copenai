@@ -28,6 +28,7 @@ pub enum ResponsesStreamEvent {
         part: OutputContentPart,
     },
     OutputTextDelta {
+        item_id: String,
         response: ResponseObject,
         output_index: usize,
         content_index: usize,
@@ -39,6 +40,7 @@ pub enum ResponsesStreamEvent {
         delta: String,
     },
     FunctionCallArgumentsDelta {
+        item_id: String,
         response: ResponseObject,
         output_index: usize,
         delta: String,
@@ -135,6 +137,7 @@ fn encode_event(event: ResponsesStreamEvent, sequence_number: u64) -> Option<Str
             }),
         )),
         ResponsesStreamEvent::OutputTextDelta {
+            item_id,
             response,
             output_index,
             content_index,
@@ -143,6 +146,7 @@ fn encode_event(event: ResponsesStreamEvent, sequence_number: u64) -> Option<Str
             "response.output_text.delta",
             sequence_number,
             json!({
+                "item_id": item_id,
                 "response": response,
                 "output_index": output_index,
                 "content_index": content_index,
@@ -163,6 +167,7 @@ fn encode_event(event: ResponsesStreamEvent, sequence_number: u64) -> Option<Str
             }),
         )),
         ResponsesStreamEvent::FunctionCallArgumentsDelta {
+            item_id,
             response,
             output_index,
             delta,
@@ -170,6 +175,7 @@ fn encode_event(event: ResponsesStreamEvent, sequence_number: u64) -> Option<Str
             "response.function_call_arguments.delta",
             sequence_number,
             json!({
+                "item_id": item_id,
                 "response": response,
                 "output_index": output_index,
                 "delta": delta,
@@ -271,10 +277,30 @@ mod tests {
     }
 
     #[test]
+    fn golden_output_text_delta_includes_item_id() {
+        let resp = response_created("resp_test", "m");
+        let data = encode_event(
+            ResponsesStreamEvent::OutputTextDelta {
+                item_id: "msg_abc123".into(),
+                response: resp,
+                output_index: 0,
+                content_index: 0,
+                delta: "Hi".into(),
+            },
+            4,
+        )
+        .unwrap();
+        assert!(data.contains("response.output_text.delta"));
+        assert!(data.contains("\"item_id\":\"msg_abc123\""));
+        assert!(data.contains("\"delta\":\"Hi\""));
+    }
+
+    #[test]
     fn golden_function_call_arguments_delta() {
         let resp = response_created("resp_test", "m");
         let data = encode_event(
             ResponsesStreamEvent::FunctionCallArgumentsDelta {
+                item_id: "fc_abc123".into(),
                 response: resp,
                 output_index: 1,
                 delta: "{\"loc".into(),
@@ -283,6 +309,7 @@ mod tests {
         )
         .unwrap();
         assert!(data.contains("response.function_call_arguments.delta"));
+        assert!(data.contains("\"item_id\":\"fc_abc123\""));
         assert!(data.contains("\"output_index\":1"));
     }
 }

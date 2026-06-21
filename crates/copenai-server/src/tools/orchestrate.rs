@@ -586,6 +586,7 @@ async fn drain_stream(
                 if let Some(tx) = &event_tx {
                     let _ = tx
                         .send(ResponsesStreamEvent::OutputTextDelta {
+                            item_id: msg_item_id.clone(),
                             response: response.clone(),
                             output_index: msg_index,
                             content_index: 0,
@@ -758,8 +759,13 @@ async fn emit_tool_sse_events(
             })
             .await;
         if !args.is_empty() {
+            let item_id = match &item {
+                OutputItem::FunctionCall { id, .. } => id.clone(),
+                _ => new_item_id("fc"),
+            };
             let _ = tx
                 .send(ResponsesStreamEvent::FunctionCallArgumentsDelta {
+                    item_id,
                     response: response.clone(),
                     output_index: idx,
                     delta: args.clone(),
