@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/beeinger/copenai"
@@ -19,7 +19,7 @@ repository = "https://github.com/beeinger/copenai"
 [workspace.dependencies]
 anyhow = "1"
 async-stream = "0.3"
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
 base64 = "0.22"
 bcrypt = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
@@ -45,6 +45,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+jsonschema = "0.29"
 agent-client-protocol = "0.15.0"
 
 copenai-core = { path = "crates/copenai-core" }

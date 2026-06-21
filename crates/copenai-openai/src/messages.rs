@@ -1,10 +1,29 @@
 use crate::multimodal::MappedContent;
+use crate::tools::{
+    format_tool_history, from_chat_choice, parse_chat_tools, filter_tools, ResolvedToolChoice,
+    FunctionTool,
+};
 use crate::types::{ChatCompletionRequest, MessageContent};
+
+#[derive(Debug, Clone)]
+pub enum TurnContent {
+    Text(String),
+    Parts(crate::types::MessageContent),
+}
+
+impl TurnContent {
+    pub fn as_text(&self) -> String {
+        match self {
+            Self::Text(t) => t.clone(),
+            Self::Parts(c) => c.as_text().unwrap_or_default(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Turn {
     pub role: String,
-    pub text: String,
+    pub content: TurnContent,
 }
 
 #[derive(Debug, Clone)]
@@ -15,6 +34,10 @@ pub struct ParsedChat {
     pub openai_user: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    pub tools: Vec<FunctionTool>,
+    pub tool_choice: ResolvedToolChoice,
+    pub tool_results: Vec<(String, String)>,
+    pub parallel_tool_calls: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +51,10 @@ pub fn parse_chat_request(request: &ChatCompletionRequest) -> Result<ParsedChat,
     if request.messages.is_empty() {
         return Err("messages must not be empty".into());
     }
+
+    let chat_tools = parse_chat_tools(request)?;
+    let tool_choice = from_chat_choice(request.tool_choice.as_ref(), request.function_call.as_ref());
+    let tools = filter_tools(&chat_tools.tools, &tool_choice);
 
     let final_user_idx = request
         .messages
@@ -44,31 +71,61 @@ pub fn parse_chat_request(request: &ChatCompletionRequest) -> Result<ParsedChat,
         }
         match msg.role.as_str() {
             "system" | "developer" => {
-                if let Some(text) = msg.content.as_text() {
+                if let Some(text) = msg.content.as_ref().and_then(|c| c.as_text()) {
                     if !text.is_empty() {
                         system_parts.push(text);
                     }
                 }
             }
             "user" | "assistant" => {
-                if let Some(text) = msg.content.as_text() {
-                    history.push(Turn {
-                        role: msg.role.clone(),
-                        text,
-                    });
-                }
+                let content = msg.content_or_default();
+                let turn_content = if let Some(text) = content.as_text() {
+                    TurnContent::Text(text)
+                } else {
+                    TurnContent::Parts(content)
+                };
+                history.push(Turn {
+                    role: msg.role.clone(),
+                    content: turn_content,
+                });
             }
+            "tool" => {}
             _ => {}
         }
     }
 
+    let tool_history = format_tool_history(
+        &chat_tools.history_tool_calls,
+        &chat_tools
+            .tool_results
+            .iter()
+            .map(|t| crate::tools::ToolResultMessage {
+                tool_call_id: t.tool_call_id.clone(),
+                content: t.content.clone(),
+            })
+            .collect::<Vec<_>>(),
+    );
+    if !tool_history.is_empty() {
+        system_parts.push(tool_history);
+    }
+
+    let tool_results: Vec<(String, String)> = chat_tools
+        .tool_results
+        .into_iter()
+        .map(|t| (t.tool_call_id, t.content))
+        .collect();
+
     Ok(ParsedChat {
         system: system_parts.join("\n\n"),
         history,
-        final_user_content: request.messages[final_user_idx].content.clone(),
+        final_user_content: request.messages[final_user_idx].content_or_default(),
         openai_user: super::conversation::openai_user_field(request),
         temperature: request.temperature,
         max_tokens: request.max_tokens,
+        tools,
+        tool_choice,
+        tool_results,
+        parallel_tool_calls: request.parallel_tool_calls(),
     })
 }
 
@@ -105,7 +162,7 @@ pub fn build_prompt_plan(parsed: &ParsedChat, session_hot: bool) -> PromptPlan {
         } else {
             "User"
         };
-        lines.push(format!("{label}: {}", turn.text));
+        lines.push(format!("{label}: {}", turn.content.as_text()));
     }
 
     PromptPlan {
@@ -117,8 +174,21 @@ pub fn build_prompt_plan(parsed: &ParsedChat, session_hot: bool) -> PromptPlan {
 
 pub fn usage_char_count(parsed: &ParsedChat, mapped: &MappedContent) -> usize {
     parsed.system.len()
-        + parsed.history.iter().map(|t| t.text.len()).sum::<usize>()
+        + parsed
+            .history
+            .iter()
+            .map(|t| t.content.as_text().len())
+            .sum::<usize>()
         + mapped.text.len()
+}
+
+/// Trim history to fit within char budget (truncation: auto).
+pub fn truncate_history(history: &mut Vec<Turn>, budget: usize) {
+    let mut total: usize = history.iter().map(|t| t.content.as_text().len()).sum();
+    while total > budget && !history.is_empty() {
+        let removed = history.remove(0);
+        total = total.saturating_sub(removed.content.as_text().len());
+    }
 }
 
 #[cfg(test)]
@@ -139,6 +209,7 @@ mod tests {
             tool_choice: None,
             functions: None,
             function_call: None,
+            parallel_tool_calls: None,
             extra: Default::default(),
         }
     }
@@ -148,15 +219,24 @@ mod tests {
         let parsed = parse_chat_request(&req(vec![
             ChatMessage {
                 role: "system".into(),
-                content: MessageContent::Text("be concise".into()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                content: Some(MessageContent::Text("be concise".into())),
             },
             ChatMessage {
                 role: "developer".into(),
-                content: MessageContent::Text("use rust".into()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                content: Some(MessageContent::Text("use rust".into())),
             },
             ChatMessage {
                 role: "user".into(),
-                content: MessageContent::Text("hi".into()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                content: Some(MessageContent::Text("hi".into())),
             },
         ]))
         .unwrap();
@@ -165,21 +245,32 @@ mod tests {
         assert_eq!(parsed.openai_user, Some("track-me".into()));
     }
 
+    fn user_msg(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: "user".into(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            content: Some(MessageContent::Text(text.into())),
+        }
+    }
+
+    fn assistant_msg(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: "assistant".into(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            content: Some(MessageContent::Text(text.into())),
+        }
+    }
+
     #[test]
     fn builds_history_replay_on_cold_session() {
         let parsed = parse_chat_request(&req(vec![
-            ChatMessage {
-                role: "user".into(),
-                content: MessageContent::Text("first".into()),
-            },
-            ChatMessage {
-                role: "assistant".into(),
-                content: MessageContent::Text("reply".into()),
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: MessageContent::Text("second".into()),
-            },
+            user_msg("first"),
+            assistant_msg("reply"),
+            user_msg("second"),
         ]))
         .unwrap();
         assert_eq!(parsed.history.len(), 2);
@@ -190,11 +281,7 @@ mod tests {
 
     #[test]
     fn hot_session_skips_replay_for_incremental_turn() {
-        let parsed = parse_chat_request(&req(vec![ChatMessage {
-            role: "user".into(),
-            content: MessageContent::Text("only".into()),
-        }]))
-        .unwrap();
+        let parsed = parse_chat_request(&req(vec![user_msg("only")])).unwrap();
         let plan = build_prompt_plan(&parsed, true);
         assert!(!plan.needs_replay);
     }
@@ -202,18 +289,9 @@ mod tests {
     #[test]
     fn hot_session_replays_when_history_present() {
         let parsed = parse_chat_request(&req(vec![
-            ChatMessage {
-                role: "user".into(),
-                content: MessageContent::Text("My name is Bob.".into()),
-            },
-            ChatMessage {
-                role: "assistant".into(),
-                content: MessageContent::Text("Hi Bob.".into()),
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: MessageContent::Text("What is my name?".into()),
-            },
+            user_msg("My name is Bob."),
+            assistant_msg("Hi Bob."),
+            user_msg("What is my name?"),
         ]))
         .unwrap();
         let plan = build_prompt_plan(&parsed, true);

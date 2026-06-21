@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub server: ServerSection,
     #[serde(default)]
     pub permissions: PermissionsSection,
+    #[serde(default)]
+    pub responses: ResponsesSection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +45,34 @@ pub struct PermissionsSection {
     pub webhook_url: String,
     #[serde(default = "default_webhook_timeout")]
     pub webhook_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsesSection {
+    #[serde(default = "default_tool_execution")]
+    pub tool_execution: String,
+    #[serde(default)]
+    pub tool_webhook: String,
+    #[serde(default = "default_webhook_timeout")]
+    pub tool_webhook_timeout_secs: u64,
+    #[serde(default = "default_webhook_fallback")]
+    pub tool_webhook_fallback: String,
+    #[serde(default = "default_max_tool_steps")]
+    pub max_tool_steps: u32,
+    #[serde(default = "default_true")]
+    pub stream_agent_tools: bool,
+}
+
+fn default_tool_execution() -> String {
+    "client".to_string()
+}
+
+fn default_webhook_fallback() -> String {
+    "none".to_string()
+}
+
+fn default_max_tool_steps() -> u32 {
+    8
 }
 
 fn default_webhook_timeout() -> u64 {
@@ -95,6 +125,19 @@ impl Default for PermissionsSection {
             auto_approve: default_true(),
             webhook_url: String::new(),
             webhook_timeout_secs: default_webhook_timeout(),
+        }
+    }
+}
+
+impl Default for ResponsesSection {
+    fn default() -> Self {
+        Self {
+            tool_execution: default_tool_execution(),
+            tool_webhook: String::new(),
+            tool_webhook_timeout_secs: default_webhook_timeout(),
+            tool_webhook_fallback: default_webhook_fallback(),
+            max_tool_steps: default_max_tool_steps(),
+            stream_agent_tools: default_true(),
         }
     }
 }

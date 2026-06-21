@@ -7,19 +7,28 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use copenai_acp::{AgentPrompt, PromptStreamEvent};
-use copenai_openai::types::{FileDeleted, FileList, OpenAiErrorBody};
+use copenai_acp::PromptStreamEvent;
+use copenai_openai::types::{ChatCompletionRequest, FileDeleted, FileList, OpenAiErrorBody};
 use copenai_openai::{messages::usage_char_count, StreamEvent, Usage};
 use copenai_store::api_keys::ApiKeyStore;
 use copenai_store::permissions::PermissionStore;
 use futures::StreamExt;
 use tower_http::trace::TraceLayer;
 
+use crate::responses::{responses_websocket, CreateOutcome, ResponsesOrchestrator};
 use crate::state::SharedState;
+use crate::tools::{calls_to_chat_tool_calls, resolve_mode, ToolExecutionMode, ToolLoopEngine, ToolOrchestrator};
 
 pub fn router(state: SharedState) -> Router {
     let api = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/responses", post(create_response).get(list_responses))
+        .route("/v1/responses/ws", get(responses_websocket))
+        .route(
+            "/v1/responses/{response_id}",
+            get(get_response)
+                .delete(delete_response),
+        )
         .route("/v1/models", get(list_models))
         .route("/v1/files", get(list_files).post(upload_file))
         .route(
@@ -99,17 +108,13 @@ fn prompt_error_response(e: &str) -> Response {
 async fn chat_completions(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
-    Json(request): Json<copenai_openai::types::ChatCompletionRequest>,
+    Json(request): Json<ChatCompletionRequest>,
 ) -> Response {
-    if request.has_tool_fields() {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "tool calling not supported; Cursor ACP does not expose OpenAI function protocol",
-        );
-    }
-
     let conv_header = headers
         .get("x-conversation-id")
+        .and_then(|v| v.to_str().ok());
+    let tool_header = headers
+        .get("x-tool-execution")
         .and_then(|v| v.to_str().ok());
     let conversation_id = copenai_openai::resolve_conversation_id(&request, conv_header);
 
@@ -124,6 +129,65 @@ async fn chat_completions(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
     };
 
+    let has_tools = !parsed.tools.is_empty() || !parsed.tool_results.is_empty();
+    if has_tools {
+        let tool_engine = ToolLoopEngine::new(state.config.responses.clone());
+        let mode = resolve_mode(
+            &state.config.responses.tool_execution,
+            request.tool_execution_mode().as_deref(),
+            tool_header,
+        );
+        if let Err(e) = tool_engine.validate_server_mode(mode) {
+            return error_response(StatusCode::BAD_REQUEST, &e);
+        }
+
+        let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+
+        if request.stream {
+            return chat_tools_stream(state, parsed, conversation_id, model, mode, response_id)
+                .await;
+        }
+
+        match ToolOrchestrator::execute_chat_turn(
+            &state,
+            &parsed,
+            &conversation_id,
+            &model,
+            mode,
+            &response_id,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                let tool_calls = if outcome.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(calls_to_chat_tool_calls(&outcome.tool_calls))
+                };
+                let response = copenai_openai::completion_response_with_tools(
+                    &response_id,
+                    &model,
+                    &outcome.text,
+                    &outcome.finish_reason,
+                    outcome.usage,
+                    tool_calls,
+                );
+                (StatusCode::OK, Json(response)).into_response()
+            }
+            Err(e) => prompt_error_response(&e),
+        }
+    } else {
+        chat_plain(state, request, parsed, conversation_id, model).await
+    }
+}
+
+async fn chat_plain(
+    state: SharedState,
+    request: ChatCompletionRequest,
+    parsed: copenai_openai::ParsedChat,
+    conversation_id: String,
+    model: String,
+) -> Response {
     let session_hot = state.supervisor.is_session_active(&conversation_id).await;
     let plan = copenai_openai::build_prompt_plan(&parsed, session_hot);
 
@@ -138,7 +202,7 @@ async fn chat_completions(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
     };
 
-    let prompt = AgentPrompt {
+    let prompt = copenai_acp::AgentPrompt {
         model: model.clone(),
         mapped: mapped.clone(),
         system_prefix: plan.system_prefix,
@@ -156,7 +220,7 @@ async fn chat_completions(
             .await
         {
             Ok(events) => {
-                let mapped_events = events.map(map_stream_event);
+                let mapped_events = events.filter_map(|e| async move { map_stream_event(e) });
                 let stream = copenai_openai::live_sse_stream(completion_id, model, mapped_events);
                 Response::builder()
                     .status(StatusCode::OK)
@@ -200,6 +264,8 @@ async fn chat_completions(
                             finish_reason = fr.as_openai_str().to_string();
                             break;
                         }
+                        PromptStreamEvent::ReasoningDelta(_)
+                        | PromptStreamEvent::AgentToolCall(_) => {}
                         PromptStreamEvent::Error(e) => return prompt_error_response(&e),
                     }
                 }
@@ -217,27 +283,68 @@ async fn chat_completions(
     }
 }
 
-fn map_stream_event(event: PromptStreamEvent) -> StreamEvent {
+async fn chat_tools_stream(
+    state: SharedState,
+    parsed: copenai_openai::ParsedChat,
+    conversation_id: String,
+    model: String,
+    mode: ToolExecutionMode,
+    response_id: String,
+) -> Response {
+    match ToolOrchestrator::execute_chat_turn(
+        &state,
+        &parsed,
+        &conversation_id,
+        &model,
+        mode,
+        &response_id,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let tool_calls = calls_to_chat_tool_calls(&outcome.tool_calls);
+            let events = futures::stream::iter(vec![
+                StreamEvent::Delta(outcome.text.clone()),
+                StreamEvent::Usage(outcome.usage.clone()),
+                StreamEvent::DoneWithTools {
+                    finish_reason: outcome.finish_reason,
+                    usage: outcome.usage,
+                    tool_calls,
+                },
+            ]);
+            let stream = copenai_openai::live_sse_stream(response_id, model, events);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream))
+                .unwrap()
+        }
+        Err(e) => prompt_error_response(&e),
+    }
+}
+
+fn map_stream_event(event: PromptStreamEvent) -> Option<StreamEvent> {
     match event {
-        PromptStreamEvent::Delta(d) => StreamEvent::Delta(d),
-        PromptStreamEvent::Usage(u) => StreamEvent::Usage(Usage {
+        PromptStreamEvent::Delta(d) => Some(StreamEvent::Delta(d)),
+        PromptStreamEvent::Usage(u) => Some(StreamEvent::Usage(Usage {
             prompt_tokens: u.prompt_tokens,
             completion_tokens: u.completion_tokens,
             total_tokens: u.total_tokens,
-        }),
+        })),
         PromptStreamEvent::Done {
             finish_reason,
             usage,
             ..
-        } => StreamEvent::Done {
+        } => Some(StreamEvent::Done {
             finish_reason: finish_reason.as_openai_str().to_string(),
             usage: Usage {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
             },
-        },
-        PromptStreamEvent::Error(e) => StreamEvent::Error(e),
+        }),
+        PromptStreamEvent::Error(e) => Some(StreamEvent::Error(e)),
+        PromptStreamEvent::ReasoningDelta(_) | PromptStreamEvent::AgentToolCall(_) => None,
     }
 }
 
@@ -446,6 +553,84 @@ async fn get_file_content(
 
 async fn not_implemented() -> Response {
     error_response(StatusCode::NOT_IMPLEMENTED, "endpoint not implemented")
+}
+
+async fn create_response(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<copenai_openai::ResponseCreateRequest>,
+) -> Response {
+    let conv_header = headers
+        .get("x-conversation-id")
+        .and_then(|v| v.to_str().ok());
+    let tool_header = headers
+        .get("x-tool-execution")
+        .and_then(|v| v.to_str().ok());
+
+    match ResponsesOrchestrator::create(&state, request, conv_header, tool_header).await {
+        Ok(CreateOutcome::Json(resp)) => {
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Ok(CreateOutcome::Stream(events)) => {
+            let stream = copenai_openai::responses_sse_stream(events);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream))
+                .unwrap()
+        }
+        Err(e) => {
+            if e.contains("tool_webhook") || e.contains("unknown tool") || e.contains("invalid") {
+                error_response(StatusCode::BAD_REQUEST, &e)
+            } else if e.contains("not found") {
+                error_response(StatusCode::NOT_FOUND, &e)
+            } else {
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, &e)
+            }
+        }
+    }
+}
+
+async fn get_response(
+    State(state): State<SharedState>,
+    Path(response_id): Path<String>,
+) -> Response {
+    match ResponsesOrchestrator::get(&state, &response_id).await {
+        Ok(Some(resp)) => (StatusCode::OK, Json(resp)).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "response not found"),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+async fn delete_response(
+    State(state): State<SharedState>,
+    Path(response_id): Path<String>,
+) -> Response {
+    match ResponsesOrchestrator::delete(&state, &response_id).await {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": response_id,
+                "object": "response",
+                "deleted": true,
+            })),
+        )
+            .into_response(),
+        Ok(false) => error_response(StatusCode::NOT_FOUND, "response not found"),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+async fn list_responses(
+    State(state): State<SharedState>,
+    Query(q): Query<copenai_openai::ResponseListQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    match ResponsesOrchestrator::list(&state, limit, q.after.as_deref(), q.order.as_deref()).await
+    {
+        Ok(list) => (StatusCode::OK, Json(list)).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {

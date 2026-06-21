@@ -6,7 +6,7 @@ use futures::Stream;
 use futures::StreamExt;
 use serde_json::json;
 
-use crate::types::{ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, ChunkDelta, Usage};
+use crate::types::{ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, ChunkDelta, ToolCall, Usage};
 
 pub fn unix_now() -> i64 {
     SystemTime::now()
@@ -20,7 +20,44 @@ pub enum StreamEvent {
     Delta(String),
     Usage(Usage),
     Done { finish_reason: String, usage: Usage },
+    DoneWithTools {
+        finish_reason: String,
+        usage: Usage,
+        tool_calls: Vec<ToolCall>,
+    },
     Error(String),
+}
+
+pub fn completion_response_with_tools(
+    id: &str,
+    model: &str,
+    content: &str,
+    finish_reason: &str,
+    usage: Usage,
+    tool_calls: Option<Vec<ToolCall>>,
+) -> ChatCompletionResponse {
+    ChatCompletionResponse {
+        id: id.to_string(),
+        object: "chat.completion",
+        created: unix_now(),
+        model: model.to_string(),
+        choices: vec![crate::types::Choice {
+            index: 0,
+            message: crate::types::AssistantMessage {
+                role: "assistant",
+                content: if tool_calls.is_some() {
+                    None
+                } else if content.is_empty() {
+                    None
+                } else {
+                    Some(content.to_string())
+                },
+                tool_calls,
+            },
+            finish_reason: finish_reason.to_string(),
+        }],
+        usage,
+    }
 }
 
 pub fn completion_response(
@@ -39,7 +76,12 @@ pub fn completion_response(
             index: 0,
             message: crate::types::AssistantMessage {
                 role: "assistant",
-                content: content.to_string(),
+                content: if content.is_empty() {
+                    None
+                } else {
+                    Some(content.to_string())
+                },
+                tool_calls: None,
             },
             finish_reason: finish_reason.to_string(),
         }],
@@ -58,6 +100,7 @@ pub fn chunk_delta(id: &str, model: &str, content: &str, first: bool) -> ChatCom
             delta: ChunkDelta {
                 role: if first { Some("assistant") } else { None },
                 content: Some(content.to_string()),
+                tool_calls: None,
             },
             finish_reason: None,
         }],
@@ -101,6 +144,32 @@ pub fn to_sse_stream(
     })
 }
 
+pub fn chunk_tool_call(id: &str, model: &str, index: u32, call: &ToolCall) -> ChatCompletionChunk {
+    ChatCompletionChunk {
+        id: id.to_string(),
+        object: "chat.completion.chunk",
+        created: unix_now(),
+        model: model.to_string(),
+        choices: vec![ChunkChoice {
+            index: 0,
+            delta: ChunkDelta {
+                role: None,
+                content: None,
+                tool_calls: Some(vec![crate::types::ToolCallChunk {
+                    index,
+                    id: Some(call.id.clone()),
+                    call_type: Some(call.call_type.clone()),
+                    function: Some(crate::types::FunctionCallChunk {
+                        name: Some(call.function.name.clone()),
+                        arguments: Some(call.function.arguments.clone()),
+                    }),
+                }]),
+            },
+            finish_reason: None,
+        }],
+    }
+}
+
 pub fn chunk_role_start(id: &str, model: &str) -> ChatCompletionChunk {
     ChatCompletionChunk {
         id: id.to_string(),
@@ -112,6 +181,7 @@ pub fn chunk_role_start(id: &str, model: &str) -> ChatCompletionChunk {
             delta: ChunkDelta {
                 role: Some("assistant"),
                 content: None,
+                tool_calls: None,
             },
             finish_reason: None,
         }],
@@ -142,6 +212,20 @@ pub fn live_sse_stream<E: Stream<Item = StreamEvent> + Send + 'static>(
                 StreamEvent::Usage(_) => {}
                 StreamEvent::Done { finish_reason: fr, .. } => {
                     finish_reason = fr;
+                    break;
+                }
+                StreamEvent::DoneWithTools {
+                    finish_reason: fr,
+                    usage: u,
+                    tool_calls,
+                } => {
+                    finish_reason = fr;
+                    for (i, tc) in tool_calls.iter().enumerate() {
+                        let chunk = chunk_tool_call(&id, &model, i as u32, tc);
+                        let data = serde_json::to_string(&chunk).unwrap();
+                        yield Ok(format!("data: {data}\n\n"));
+                    }
+                    let _ = u;
                     break;
                 }
                 StreamEvent::Error(e) => {

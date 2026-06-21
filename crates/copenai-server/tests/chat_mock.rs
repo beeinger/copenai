@@ -51,13 +51,21 @@ async fn chat_sync_mock() {
 }
 
 #[tokio::test]
-async fn tools_returns_501() {
-    let harness = TestHarness::with_mock(MockResponse::Text("x".into())).await;
+async fn chat_tools_client_sync() {
+    let tool_json = r#"{"name": "get_weather", "arguments": {"location": "Boston"}}"#;
+    let harness = TestHarness::with_mock(MockResponse::Text(tool_json.into())).await;
     let app = harness.app();
     let body = serde_json::json!({
         "model": "composer-2.5",
-        "messages": [{"role": "user", "content": "hi"}],
-        "tools": [{"type": "function", "function": {"name": "foo"}}]
+        "messages": [{"role": "user", "content": "weather?"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "parameters": { "type": "object", "properties": { "location": { "type": "string" } } }
+            }
+        }],
+        "metadata": { "tool_execution": "client" }
     });
     let resp = app
         .oneshot(
@@ -71,7 +79,137 @@ async fn tools_returns_501() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(json["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "get_weather");
+}
+
+#[tokio::test]
+async fn chat_tools_client_stream() {
+    let tool_json = r#"{"name": "foo", "arguments": {}}"#;
+    let harness = TestHarness::with_mock(MockResponse::Text(tool_json.into())).await;
+    let app = harness.app();
+    let body = serde_json::json!({
+        "model": "composer-2.5",
+        "messages": [{"role": "user", "content": "go"}],
+        "tools": [{ "type": "function", "function": { "name": "foo" } }],
+        "stream": true,
+        "metadata": { "tool_execution": "client" }
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.api_key))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("tool_calls"));
+    assert!(text.contains("[DONE]"));
+}
+
+#[tokio::test]
+async fn chat_tool_role_continuation() {
+    let harness = TestHarness::with_mock(MockResponse::Text("final answer".into())).await;
+    let app = harness.app();
+    let body = serde_json::json!({
+        "model": "composer-2.5",
+        "messages": [
+            {"role": "user", "content": "weather?"},
+            {"role": "assistant", "content": null, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": { "name": "get_weather", "arguments": "{\"location\":\"Boston\"}" }
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "sunny"}
+        ],
+        "tools": [{ "type": "function", "function": { "name": "get_weather" } }]
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.api_key))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn chat_tools_server_requires_webhook() {
+    let harness = TestHarness::with_mock(MockResponse::Text("x".into())).await;
+    let app = harness.app();
+    let body = serde_json::json!({
+        "model": "composer-2.5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{ "type": "function", "function": { "name": "foo" } }],
+        "metadata": { "tool_execution": "server" }
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.api_key))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn chat_tools_server_webhook() {
+    let tool_json = r#"{"name": "echo", "arguments": {"x": 1}}"#;
+    let (harness, _) = TestHarness::with_webhook_server(
+        MockResponse::Sequence(vec![
+            MockResponse::Text(tool_json.into()),
+            MockResponse::Text("done after tool".into()),
+        ]),
+        |_| "webhook ok".into(),
+    )
+    .await;
+    let app = harness.app();
+    let body = serde_json::json!({
+        "model": "composer-2.5",
+        "messages": [{"role": "user", "content": "run tool"}],
+        "tools": [{ "type": "function", "function": { "name": "echo" } }],
+        "metadata": { "tool_execution": "server" }
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.api_key))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("done after tool"));
 }
 
 #[tokio::test]

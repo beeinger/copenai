@@ -28,10 +28,15 @@ tower-http.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+jsonschema.workspace = true
 tempfile = { workspace = true, optional = true }
 
 [[test]]
 name = "chat_mock"
+required-features = ["test-utils"]
+
+[[test]]
+name = "responses_mock"
 required-features = ["test-utils"]
 
 [dev-dependencies]

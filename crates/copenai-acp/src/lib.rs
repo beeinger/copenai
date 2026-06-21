@@ -8,7 +8,8 @@ pub mod supervisor;
 pub mod worker;
 
 pub use backend::{
-    FinishReason, PromptEventStream, PromptStreamEvent, SupervisorBackend, UsageSnapshot,
+    AgentToolEvent, AgentToolEventKind, FinishReason, PromptEventStream, PromptStreamEvent,
+    SupervisorBackend, UsageSnapshot,
 };
 #[cfg(feature = "test-utils")]
 pub use mock::{mock_supervisor, MockResponse, MockSupervisor};

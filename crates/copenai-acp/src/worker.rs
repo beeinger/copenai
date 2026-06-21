@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
-    ReadTextFileRequest, ReadTextFileResponse, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
+    PromptResponse, ReadTextFileRequest, ReadTextFileResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, TextContent, ToolCall, ToolCallStatus, ToolCallUpdate,
     WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::schema::ProtocolVersion;
@@ -22,7 +23,9 @@ use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 
-use crate::backend::{FinishReason, PromptStreamEvent, UsageSnapshot};
+use crate::backend::{
+    AgentToolEvent, AgentToolEventKind, FinishReason, PromptStreamEvent, UsageSnapshot,
+};
 use crate::handlers::{read_text_file, write_text_file, HandlerContext};
 use crate::resume::{ResumeCapabilities, ResumeMode};
 
@@ -104,6 +107,32 @@ async fn run_worker_loop(
                                 if let Some(tx) = guard.as_ref() {
                                     let _ = tx.unbounded_send(PromptStreamEvent::Delta(t.text));
                                 }
+                            }
+                        }
+                        SessionUpdate::AgentThoughtChunk(chunk) => {
+                            if let ContentBlock::Text(t) = chunk.content {
+                                let guard = sink_notify.lock().await;
+                                if let Some(tx) = guard.as_ref() {
+                                    let _ = tx.unbounded_send(PromptStreamEvent::ReasoningDelta(
+                                        t.text,
+                                    ));
+                                }
+                            }
+                        }
+                        SessionUpdate::ToolCall(tool_call) => {
+                            let guard = sink_notify.lock().await;
+                            if let Some(tx) = guard.as_ref() {
+                                let _ = tx.unbounded_send(PromptStreamEvent::AgentToolCall(
+                                    agent_tool_event_started(&tool_call),
+                                ));
+                            }
+                        }
+                        SessionUpdate::ToolCallUpdate(update) => {
+                            let guard = sink_notify.lock().await;
+                            if let Some(tx) = guard.as_ref() {
+                                let _ = tx.unbounded_send(PromptStreamEvent::AgentToolCall(
+                                    agent_tool_event_updated(&update),
+                                ));
                             }
                         }
                         SessionUpdate::UsageUpdate(usage) => {
@@ -425,7 +454,7 @@ async fn execute_prompt(
         *guard = Some(event_tx);
     }
 
-    connection
+    let prompt_response: PromptResponse = connection
         .send_request(PromptRequest::new(session_id.clone(), blocks))
         .block_task()
         .await
@@ -447,6 +476,7 @@ async fn execute_prompt(
                 match &event {
                     PromptStreamEvent::Delta(delta) => collected.push_str(delta),
                     PromptStreamEvent::Usage(u) => usage = u.clone(),
+                    PromptStreamEvent::ReasoningDelta(_) | PromptStreamEvent::AgentToolCall(_) => {}
                     _ => {}
                 }
                 let _ = stream_tx.send(event).await;
@@ -479,7 +509,7 @@ async fn execute_prompt(
 
     stream_tx
         .send(PromptStreamEvent::Done {
-            finish_reason: FinishReason::Stop,
+            finish_reason: FinishReason::from_acp_stop(prompt_response.stop_reason),
             full_text: collected.clone(),
             usage,
         })
@@ -625,4 +655,40 @@ async fn append_transcript(
         "model": model,
     });
     let _ = tokio::fs::write(file, line.to_string()).await;
+}
+
+fn agent_tool_event_started(tool_call: &ToolCall) -> AgentToolEvent {
+    AgentToolEvent {
+        kind: AgentToolEventKind::Started,
+        tool_call_id: tool_call.tool_call_id.to_string(),
+        title: tool_call.title.clone(),
+        status: Some(tool_call_status_str(&tool_call.status)),
+        raw_input: tool_call.raw_input.clone(),
+        raw_output: tool_call.raw_output.clone(),
+    }
+}
+
+fn agent_tool_event_updated(update: &ToolCallUpdate) -> AgentToolEvent {
+    AgentToolEvent {
+        kind: AgentToolEventKind::Updated,
+        tool_call_id: update.tool_call_id.to_string(),
+        title: update
+            .fields
+            .title
+            .clone()
+            .unwrap_or_else(|| "agent_tool".into()),
+        status: update.fields.status.as_ref().map(tool_call_status_str),
+        raw_input: update.fields.raw_input.clone(),
+        raw_output: update.fields.raw_output.clone(),
+    }
+}
+
+fn tool_call_status_str(status: &ToolCallStatus) -> String {
+    match status {
+        ToolCallStatus::Pending => "pending".into(),
+        ToolCallStatus::InProgress => "in_progress".into(),
+        ToolCallStatus::Completed => "completed".into(),
+        ToolCallStatus::Failed => "failed".into(),
+        _ => "unknown".into(),
+    }
 }

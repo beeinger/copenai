@@ -412,19 +412,20 @@ async fn e2e_16_missing_bearer() {
 
 #[tokio::test]
 #[ignore]
-async fn e2e_17_tools_501() {
+async fn e2e_17_chat_tools_client() {
     let env = require_env!();
     let client = env.client();
     let resp = chat(&client, &env)
         .json(&serde_json::json!({
             "model": MODEL,
-            "messages": [{"role": "user", "content": "hi"}],
-            "tools": []
+            "messages": [{"role": "user", "content": "Use tool if needed"}],
+            "tools": [{ "type": "function", "function": { "name": "noop" } }],
+            "metadata": { "tool_execution": "client" }
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 501);
+    assert!(resp.status().is_success());
 }
 
 #[tokio::test]
@@ -491,4 +492,165 @@ async fn e2e_19_user_field_not_conv_id() {
         .unwrap()
         .to_lowercase();
     assert!(content.contains("bob"));
+}
+
+fn responses(client: &reqwest::Client, env: &E2eEnv) -> reqwest::RequestBuilder {
+    client
+        .post(format!("{}/v1/responses", env.base_url))
+        .bearer_auth(&env.api_key)
+        .header("content-type", "application/json")
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_20_responses_sync() {
+    let env = require_env!();
+    let client = env.client();
+    let resp = responses(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "input": "Reply with exactly: pong"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "response");
+    assert_eq!(body["status"], "completed");
+    assert!(!body["output"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_21_responses_stream() {
+    let env = require_env!();
+    let client = env.client();
+    let resp = responses(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "input": "Say hi",
+            "stream": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("response.created"));
+    assert!(text.contains("response.completed"));
+    assert!(text.contains("[DONE]"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_22_responses_store() {
+    let env = require_env!();
+    let client = env.client();
+    let resp = responses(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "input": "store this",
+            "store": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let id = body["id"].as_str().unwrap();
+    let get = client
+        .get(format!("{}/v1/responses/{}", env.base_url, id))
+        .bearer_auth(&env.api_key)
+        .send()
+        .await
+        .unwrap();
+    assert!(get.status().is_success());
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_23_responses_client_tool_roundtrip() {
+    let env = require_env!();
+    let client = env.client();
+    let first = responses(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "input": "call tool",
+            "store": true,
+            "tools": [{ "type": "function", "name": "noop" }],
+            "metadata": { "tool_execution": "client" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success());
+    let body: serde_json::Value = first.json().await.unwrap();
+    let id = body["id"].as_str().unwrap();
+    let second = responses(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "input": [{ "type": "function_call_output", "call_id": "c1", "output": "ok" }],
+            "previous_response_id": id,
+            "store": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(second.status().is_success());
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_24_responses_server_webhook() {
+    let env = require_env!();
+    let client = env.client();
+    let resp = responses(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "input": "run server tool",
+            "tools": [{ "type": "function", "name": "noop" }],
+            "metadata": { "tool_execution": "server" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success() || resp.status().as_u16() == 400);
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_25_chat_tools_client() {
+    let env = require_env!();
+    let client = env.client();
+    let resp = chat(&client, &env)
+        .json(&serde_json::json!({
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "tool test"}],
+            "tools": [{ "type": "function", "function": { "name": "noop" } }],
+            "metadata": { "tool_execution": "client" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_26_responses_websocket() {
+    let env = require_env!();
+    // HTTP-level smoke: WS route exists (full WS client out of scope for ignored e2e)
+    let resp = env
+        .client()
+        .get(format!("{}/v1/responses/ws", env.base_url))
+        .header("Authorization", format!("Bearer {}", env.api_key))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().as_u16() == 101 || resp.status().is_success());
 }

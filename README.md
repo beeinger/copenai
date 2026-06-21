@@ -42,8 +42,14 @@ Single reference for what works, how it maps to OpenAI, what does not, and where
 | **Sampling** | `temperature`, `max_tokens` | ⚠️ Conditional | Forwarded via ACP `SetSessionConfigOption` when agent exposes matching option ids | If agent lacks option → **400** (not silently ignored) | `e2e_08`, `e2e_09` |
 | **Other sampling** | `top_p`, penalties, `seed`, `n`, `logprobs`, `response_format`, … | ❌ | Request fields accepted in JSON but **not forwarded** to ACP | Cursor ACP has no OpenAI-equivalent knobs | — |
 | **Usage** | `usage.{prompt,completion,total}_tokens` | ⚠️ Best-effort | ACP `UsageUpdate` when agent sends it; else char÷4 estimate | Counts may differ from OpenAI tokenizer | `e2e_02` |
-| **Finish reason** | `stop`, `length`, `content_filter`, `tool_calls` | ⚠️ Partial | Mapped from ACP completion (`stop`, `length`, `content_filter`) | No `tool_calls` finish reason (tools unsupported) | streaming path in `sse::tests` |
-| **Tool calling** | `tools`, `tool_choice`, `functions`, `function_call` | ❌ | **501** with explicit error body | Cursor ACP does not expose OpenAI function-calling protocol | `chat_mock::tools_returns_501`, `e2e_17` |
+| **Finish reason** | `stop`, `length`, `content_filter`, `tool_calls` | ✅ | Mapped from ACP + tool orchestration (`tool_calls` when client mode stops for tools) | Server mode may end with `stop` after webhook loop | `chat_mock::chat_tools_client_sync` |
+| **Tool calling (chat)** | `tools`, `tool_choice`, `functions`, `function_call` on `/v1/chat/completions` | ✅ | Shared tool orchestrator; client + server (`tool_webhook`) modes; `metadata.tool_execution` / `X-Tool-Execution` | ACP uses prompt + JSON parse adapter, not native tool RPC | `chat_mock::chat_tools_*` |
+| **Responses API** | `POST/GET/DELETE /v1/responses`, `GET /v1/responses` list | ✅ | OpenAI Responses wire format; sync + SSE; local SQLite store (`store: true`, `previous_response_id`) | Backend is Cursor ACP, not OpenAI models | `responses_mock::*` |
+| **Responses tools** | `tools[]`, `tool_choice`, `parallel_tool_calls`, `truncation`, `function_call` / `function_call_output` | ✅ | Client + server modes; `tool_choice` / `parallel_tool_calls`; `truncation: auto`; `incomplete_details` | No OpenAI-hosted tool runtimes; ACP has no native tool RPC | `responses_mock::*` |
+| **Responses WebSocket** | `GET /v1/responses/ws` + `response.create` | ✅ | Same event vocabulary as SSE; per-connection `previous_response_id` cache (60m) | One in-flight response per connection | `e2e_26` |
+| **Responses structured output** | `text.format.type = json_schema` | ✅ | Schema injected into prompt; output validated with `jsonschema` | Best-effort on agent compliance | `responses::parser::tests` |
+| **Responses reasoning** | `reasoning`, `include: ["reasoning"]` | ⚠️ Best-effort | ACP `AgentThoughtChunk` → `reasoning` output items / stream deltas | Shape may differ from OpenAI | `responses_mock::responses_agent_tool_observability` |
+| **ACP agent tool observability** | *(extension)* | ➕ Extra | Cursor internal `ToolCall` streamed as `function_call` with `agent_` name prefix | Not request `tools[]`; config `[responses].stream_agent_tools` | `responses_mock::responses_agent_tool_observability` |
 | **Multimodal image** | `image_url` content parts | ✅ | `data:` URLs + `http(s)://` download → session assets → ACP image blocks | No `file://`; remote images ≤ 20 MB; must be `image/*` | `e2e_10`, `e2e_12`, `multimodal::tests` |
 | **Multimodal file** | `input_file` / `file` + `file_id` | ✅ | Stage via `/v1/files`, copy into session assets for ACP | Agent must accept file attachments | `e2e_10`, `e2e_11` |
 | **Multimodal audio** | `input_audio` inline base64 | ✅ | Decode to temp file (e.g. `.wav`) → ACP audio block | Agent capability-dependent; not OpenAI `/v1/audio` API | `e2e_11` |
@@ -61,8 +67,8 @@ Single reference for what works, how it maps to OpenAI, what does not, and where
 | Layer | Command | Cursor needed | What it covers |
 |-------|---------|---------------|----------------|
 | **Unit** | `cargo test --all --all-features` (CI on every push) | No | Message parsing, files validation, SSE framing, resume probe, API keys, multimodal mapping, skip harness |
-| **Mock HTTP** | `cargo test -p copenai-server --features test-utils --test chat_mock` | No | Health, sync chat, SSE chunks, 401, tools 501, files list/delete — `MockSupervisor` backend |
-| **Live E2E** | `COPENAI_E2E=1 cargo test -p copenai-e2e -- --ignored --test-threads=1 --show-output` | Yes (login or `CURSOR_API_KEY`) | 17 scenarios: chat, stream, roles, sampling, files, multimodal, errors, model switch, conv-id semantics |
+| **Mock HTTP** | `cargo test -p copenai-server --features test-utils --test chat_mock` and `--test responses_mock` | No | Health, sync chat, SSE chunks, 401, chat tools, files list/delete, Responses sync/stream/store/tools/webhook | `MockSupervisor` backend |
+| **Live E2E** | `COPENAI_E2E=1 cargo test -p copenai-e2e -- --ignored --test-threads=1 --show-output` | Yes (login or `CURSOR_API_KEY`) | 26 scenarios: chat, stream, roles, sampling, files, multimodal, Responses API, tools, WebSocket, errors | `e2e_17`–`e2e_26` |
 | **Status probe** | `cargo test -p copenai-e2e live_e2e_status` | No | Always runs; prints READY/SKIPPED + reason (visible on TTY) |
 | **Nightly E2E** | `.github/workflows/e2e.yml` | Optional secret | Same live suite; skips pass if no auth |
 
@@ -81,6 +87,14 @@ client = OpenAI(
 client.chat.completions.create(
     model="composer-2.5",
     messages=[{"role": "user", "content": "hello"}],
+    extra_headers={"X-Conversation-Id": "my-thread-1"},
+)
+
+# Responses API (OpenAI SDK 1.x+)
+client.responses.create(
+    model="composer-2.5",
+    input="hello",
+    store=True,
     extra_headers={"X-Conversation-Id": "my-thread-1"},
 )
 ```
@@ -113,7 +127,24 @@ idle_timeout_secs = 1800
 auto_approve = true
 webhook_url = ""
 webhook_timeout_secs = 30
+
+[responses]
+tool_execution = "client"          # "client" | "server"
+tool_webhook = ""                  # required for server mode
+tool_webhook_timeout_secs = 30
+tool_webhook_fallback = "none"     # "none" | "agent"
+max_tool_steps = 8
+stream_agent_tools = true
 ```
+
+### Responses API extensions
+
+| Mechanism | Purpose |
+|-----------|---------|
+| `metadata.tool_execution` | `"client"` or `"server"` tool loop |
+| `X-Tool-Execution` header | Same as above (header wins over config default) |
+| `[responses].tool_webhook` | HTTP endpoint for server-mode tool execution |
+| `metadata.conversation_id` / `X-Conversation-Id` | Session routing (same as chat) |
 
 ## Examples
 

@@ -15,6 +15,14 @@ pub enum MockResponse {
     Text(String),
     Stream(Vec<String>),
     Error(String),
+    /// Text response with optional reasoning and agent-tool events before Done.
+    WithEvents {
+        text: String,
+        reasoning: Vec<String>,
+        agent_tools: Vec<(String, String)>,
+    },
+    /// Pop responses in order per prompt_stream call (for tool loop tests).
+    Sequence(Vec<MockResponse>),
 }
 
 pub struct MockSupervisor {
@@ -22,6 +30,7 @@ pub struct MockSupervisor {
     default: RwLock<MockResponse>,
     active: Mutex<HashMap<String, String>>,
     stream_delay: Duration,
+    sequence_idx: Mutex<HashMap<String, usize>>,
 }
 
 impl MockSupervisor {
@@ -31,6 +40,7 @@ impl MockSupervisor {
             default: RwLock::new(default),
             active: Mutex::new(HashMap::new()),
             stream_delay: Duration::from_millis(5),
+            sequence_idx: Mutex::new(HashMap::new()),
         }
     }
 
@@ -47,9 +57,25 @@ impl MockSupervisor {
 
     async fn resolve(&self, conversation_id: &str) -> MockResponse {
         if let Some(r) = self.responses.read().await.get(conversation_id) {
-            return r.clone();
+            return self.resolve_one(conversation_id, r.clone()).await;
         }
-        self.default.read().await.clone()
+        let default = self.default.read().await.clone();
+        self.resolve_one(conversation_id, default).await
+    }
+
+    async fn resolve_one(&self, conversation_id: &str, response: MockResponse) -> MockResponse {
+        match response {
+            MockResponse::Sequence(items) if !items.is_empty() => {
+                let mut idx_map = self.sequence_idx.lock().await;
+                let idx = idx_map.entry(conversation_id.to_string()).or_insert(0);
+                let item = items.get(*idx).cloned().unwrap_or_else(|| {
+                    items.last().cloned().unwrap_or(MockResponse::Text(String::new()))
+                });
+                *idx = (*idx + 1).min(items.len());
+                item
+            }
+            other => other,
+        }
     }
 }
 
@@ -69,6 +95,7 @@ impl SupervisorBackend for MockSupervisor {
                 }
                 PromptStreamEvent::Error(e) => return Err(e),
                 PromptStreamEvent::Usage(_) => {}
+                PromptStreamEvent::ReasoningDelta(_) | PromptStreamEvent::AgentToolCall(_) => {}
             }
         }
         Ok(text)
@@ -117,6 +144,40 @@ impl SupervisorBackend for MockSupervisor {
                         usage,
                     };
                 })
+            }
+            MockResponse::WithEvents {
+                text,
+                reasoning,
+                agent_tools,
+            } => {
+                let usage = UsageSnapshot::estimate(prompt_chars, text.len());
+                let reasoning = reasoning.clone();
+                let agent_tools = agent_tools.clone();
+                let text_clone = text.clone();
+                Box::pin(stream! {
+                    for r in reasoning {
+                        yield PromptStreamEvent::ReasoningDelta(r);
+                    }
+                    for (id, title) in agent_tools {
+                        yield PromptStreamEvent::AgentToolCall(crate::backend::AgentToolEvent {
+                            kind: crate::backend::AgentToolEventKind::Started,
+                            tool_call_id: id,
+                            title,
+                            status: Some("in_progress".into()),
+                            raw_input: None,
+                            raw_output: None,
+                        });
+                    }
+                    yield PromptStreamEvent::Delta(text_clone.clone());
+                    yield PromptStreamEvent::Done {
+                        finish_reason: FinishReason::Stop,
+                        full_text: text,
+                        usage,
+                    };
+                })
+            }
+            MockResponse::Sequence(_) => {
+                unreachable!("Sequence must be resolved in resolve_one before prompt_stream")
             }
         };
         Ok(stream)

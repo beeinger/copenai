@@ -49,11 +49,40 @@ impl FinishReason {
             Self::ContentFilter => "content_filter",
         }
     }
+
+    pub fn from_acp_stop(reason: agent_client_protocol::schema::v1::StopReason) -> Self {
+        use agent_client_protocol::schema::v1::StopReason;
+        match reason {
+            StopReason::MaxTokens => Self::Length,
+            StopReason::Refusal => Self::ContentFilter,
+            StopReason::EndTurn | StopReason::MaxTurnRequests | StopReason::Cancelled => Self::Stop,
+            _ => Self::Stop,
+        }
+    }
+}
+
+/// Cursor agent internal tool call (ACP observability, not request `tools[]`).
+#[derive(Debug, Clone)]
+pub enum AgentToolEventKind {
+    Started,
+    Updated,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentToolEvent {
+    pub kind: AgentToolEventKind,
+    pub tool_call_id: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub raw_input: Option<serde_json::Value>,
+    pub raw_output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
 pub enum PromptStreamEvent {
     Delta(String),
+    ReasoningDelta(String),
+    AgentToolCall(AgentToolEvent),
     Usage(UsageSnapshot),
     Done {
         finish_reason: FinishReason,
@@ -95,6 +124,7 @@ pub(crate) async fn collect_stream(
     while let Some(event) = events.next().await {
         match event {
             PromptStreamEvent::Delta(delta) => text.push_str(&delta),
+            PromptStreamEvent::ReasoningDelta(_) | PromptStreamEvent::AgentToolCall(_) => {}
             PromptStreamEvent::Usage(u) => usage = u,
             PromptStreamEvent::Done {
                 finish_reason,
