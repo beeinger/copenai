@@ -53,7 +53,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: copenai
-          image: ghcr.io/beeinger/copenai:0.1.0
+          image: ghcr.io/beeinger/copenai:0.1.1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

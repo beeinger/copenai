@@ -22,11 +22,10 @@ RUN case "${TARGETARCH}" in \
         arm64) AGENT_ARCH=arm64 ;; \
         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && mkdir -p /tmp/agent \
+    && mkdir -p /opt/cursor-agent \
     && curl -fSL "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${AGENT_ARCH}/agent-cli-package.tar.gz" \
-        | tar --strip-components=1 -xzf - -C /tmp/agent \
-    && install -m 0755 /tmp/agent/cursor-agent /usr/local/bin/agent \
-    && rm -rf /tmp/agent
+        | tar --strip-components=1 -xzf - -C /opt/cursor-agent \
+    && ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent
 
 COPY --from=builder /app/target/release/copenai /usr/local/bin/copenai
 
