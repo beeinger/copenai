@@ -33,15 +33,15 @@ pub fn from_responses_tools(tools: &[FunctionTool]) -> Vec<FunctionTool> {
 /// Parse a single tool entry from either Responses API (`name` at top level)
 /// or Chat Completions API (`function.name` nested).
 pub fn parse_tool_value(item: &Value) -> Result<FunctionTool, String> {
-    from_chat_request(Some(&Value::Array(vec![item.clone()])), None).and_then(|mut v| {
-        v.pop()
-            .ok_or_else(|| "empty tool entry".to_string())
-    })
+    from_chat_request(Some(&Value::Array(vec![item.clone()])), None)
+        .and_then(|mut v| v.pop().ok_or_else(|| "empty tool entry".to_string()))
 }
 
 /// Deserialize `tools` on Responses requests — accepts flat Responses tools and
 /// Chat Completions `{ type, function: { name, ... } }` entries (e.g. Vercel AI SDK).
-pub fn deserialize_optional_tools<'de, D>(deserializer: D) -> Result<Option<Vec<FunctionTool>>, D::Error>
+pub fn deserialize_optional_tools<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<FunctionTool>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

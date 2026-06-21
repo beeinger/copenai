@@ -82,7 +82,11 @@ pub struct ResponseCreateRequest {
     pub reasoning: Option<ReasoningConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_optional_tools")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_tools"
+    )]
     pub tools: Option<Vec<FunctionTool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ResponsesToolChoice>,
