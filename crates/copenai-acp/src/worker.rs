@@ -21,7 +21,7 @@ use copenai_store::permissions::PermissionStore;
 use futures::channel::mpsc::UnboundedSender;
 use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::backend::{
     AgentToolEvent, AgentToolEventKind, FinishReason, PromptStreamEvent, UsageSnapshot,
@@ -368,44 +368,50 @@ async fn apply_sampling_params(
     max_tokens: Option<u32>,
 ) -> Result<(), String> {
     if let Some(temp) = temperature {
-        if (temp - 1.0).abs() > f32::EPSILON && (temp).abs() > f32::EPSILON {
-            if !caps.config_option_ids.iter().any(|id| id == "temperature") {
-                return Err("temperature/max_tokens not supported by Cursor ACP agent".into());
+        if (temp - 1.0).abs() > f32::EPSILON && temp.abs() > f32::EPSILON {
+            if caps.config_option_ids.iter().any(|id| id == "temperature") {
+                connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session_id.clone(),
+                        "temperature",
+                        temp.to_string(),
+                    ))
+                    .block_task()
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else {
+                debug!(
+                    temperature = temp,
+                    "skipping unsupported temperature for Cursor ACP agent"
+                );
             }
-            connection
-                .send_request(SetSessionConfigOptionRequest::new(
-                    session_id.clone(),
-                    "temperature",
-                    temp.to_string(),
-                ))
-                .block_task()
-                .await
-                .map_err(|e| e.to_string())?;
         }
     }
     if let Some(max) = max_tokens {
         if max > 0 {
-            if !caps
-                .config_option_ids
-                .iter()
-                .any(|id| id == "max_tokens" || id == "maxTokens")
-            {
-                return Err("temperature/max_tokens not supported by Cursor ACP agent".into());
-            }
-            let id = if caps.config_option_ids.contains(&"max_tokens".to_string()) {
-                "max_tokens"
+            let max_token_id = if caps.config_option_ids.contains(&"max_tokens".to_string()) {
+                Some("max_tokens")
+            } else if caps.config_option_ids.contains(&"maxTokens".to_string()) {
+                Some("maxTokens")
             } else {
-                "maxTokens"
+                None
             };
-            connection
-                .send_request(SetSessionConfigOptionRequest::new(
-                    session_id.clone(),
-                    id,
-                    max.to_string(),
-                ))
-                .block_task()
-                .await
-                .map_err(|e| e.to_string())?;
+            if let Some(id) = max_token_id {
+                connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session_id.clone(),
+                        id,
+                        max.to_string(),
+                    ))
+                    .block_task()
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else {
+                debug!(
+                    max_tokens = max,
+                    "skipping unsupported max_tokens for Cursor ACP agent"
+                );
+            }
         }
     }
     Ok(())
