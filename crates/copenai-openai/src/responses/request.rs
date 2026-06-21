@@ -1,15 +1,66 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use super::input::InputItem;
-use crate::tools::{FunctionTool, ResponsesToolChoice};
+use super::input::{InputContentPart, InputItem, InputMessageContent};
+use crate::tools::{deserialize_optional_tools, FunctionTool, ResponsesToolChoice};
+
+pub fn deserialize_response_input<'de, D>(deserializer: D) -> Result<ResponseInput, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(text) => Ok(ResponseInput::Text(text)),
+        Value::Array(items) => {
+            let mut parsed = Vec::with_capacity(items.len());
+            for item in items {
+                if let Ok(input_item) = serde_json::from_value::<InputItem>(item.clone()) {
+                    parsed.push(input_item);
+                    continue;
+                }
+                let obj = item
+                    .as_object()
+                    .ok_or_else(|| DeError::custom("input item must be an object"))?;
+                let role = obj
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| DeError::custom("input item missing role"))?;
+                let content = obj
+                    .get("content")
+                    .ok_or_else(|| DeError::custom("input item missing content"))?;
+                let content = match content {
+                    Value::String(text) => InputMessageContent::Text(text.clone()),
+                    Value::Array(parts) => {
+                        let parts: Vec<InputContentPart> =
+                            serde_json::from_value(Value::Array(parts.clone()))
+                                .map_err(DeError::custom)?;
+                        InputMessageContent::Parts(parts)
+                    }
+                    _ => {
+                        return Err(DeError::custom(
+                            "input item content must be a string or content parts array",
+                        ));
+                    }
+                };
+                parsed.push(InputItem::Message {
+                    role: role.to_string(),
+                    content,
+                });
+            }
+            Ok(ResponseInput::Items(parsed))
+        }
+        _ => Err(DeError::custom("input must be a string or array")),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseCreateRequest {
     pub model: String,
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_response_input")]
     pub input: ResponseInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -31,7 +82,7 @@ pub struct ResponseCreateRequest {
     pub reasoning: Option<ReasoningConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_optional_tools")]
     pub tools: Option<Vec<FunctionTool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ResponsesToolChoice>,

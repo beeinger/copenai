@@ -528,3 +528,37 @@ async fn responses_max_tool_steps() {
     assert_eq!(json["status"], "incomplete");
     assert_eq!(json["incomplete_details"]["reason"], "max_tool_steps");
 }
+
+#[tokio::test]
+async fn responses_accepts_chat_style_tools_and_simple_input() {
+    let harness = TestHarness::with_mock(MockResponse::Text("hi".into())).await;
+    let app = harness.app();
+    let body = serde_json::json!({
+        "model": "composer-2.5",
+        "input": [{ "role": "user", "content": "hello" }],
+        "stream": true,
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "docRead",
+                "description": "read a doc",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        }],
+        "max_output_tokens": 4096,
+        "temperature": 0
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.api_key))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

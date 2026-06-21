@@ -26,9 +26,37 @@ impl FunctionTool {
     }
 }
 
-/// Parse Responses API `tools[]` entries (flat `name` field).
 pub fn from_responses_tools(tools: &[FunctionTool]) -> Vec<FunctionTool> {
     tools.to_vec()
+}
+
+/// Parse a single tool entry from either Responses API (`name` at top level)
+/// or Chat Completions API (`function.name` nested).
+pub fn parse_tool_value(item: &Value) -> Result<FunctionTool, String> {
+    from_chat_request(Some(&Value::Array(vec![item.clone()])), None).and_then(|mut v| {
+        v.pop()
+            .ok_or_else(|| "empty tool entry".to_string())
+    })
+}
+
+/// Deserialize `tools` on Responses requests — accepts flat Responses tools and
+/// Chat Completions `{ type, function: { name, ... } }` entries (e.g. Vercel AI SDK).
+pub fn deserialize_optional_tools<'de, D>(deserializer: D) -> Result<Option<Vec<FunctionTool>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let arr = value
+        .as_array()
+        .ok_or_else(|| serde::de::Error::custom("tools must be an array"))?;
+    let mut tools = Vec::with_capacity(arr.len());
+    for item in arr {
+        tools.push(parse_tool_value(item).map_err(serde::de::Error::custom)?);
+    }
+    Ok(Some(tools))
 }
 
 /// Parse Chat Completions `tools[]` (`{type, function:{name,...}}`) or legacy `functions[]`.
@@ -115,7 +143,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn parse_chat_tools_array() {
+    fn parse_responses_flat_tool() {
+        let tool = json!({
+            "type": "function",
+            "name": "docRead",
+            "parameters": { "type": "object" }
+        });
+        let parsed = parse_tool_value(&tool).unwrap();
+        assert_eq!(parsed.name, "docRead");
+    }
+
+    #[test]
+    fn parse_chat_nested_tool() {
         let tools = json!([{
             "type": "function",
             "function": {

@@ -12,7 +12,10 @@ pub use choice::{
 pub use detect::{
     detect_tool_calls, ensure_call_ids, parse_and_validate_calls, ParsedFunctionCall,
 };
-pub use function_tool::{from_chat_request, from_responses_tools, FunctionTool};
+pub use function_tool::{
+    deserialize_optional_tools, from_chat_request, from_responses_tools, parse_tool_value,
+    FunctionTool,
+};
 pub use parse_chat::{
     format_tool_history, parse_chat_tools, HistoryToolCall, ParsedChatTools, ToolResultMessage,
 };
