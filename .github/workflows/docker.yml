@@ -61,19 +61,17 @@ jobs:
           echo "should_push=${SHOULD_PUSH}" >> "$GITHUB_OUTPUT"
           echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
 
-  build:
+  build-amd:
     needs: resolve
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
     permissions:
-      contents: write
+      contents: read
       packages: write
-      deployments: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
 
@@ -98,18 +96,31 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: ${{ needs.resolve.outputs.should_push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  release:
+    needs: [resolve, build-amd]
+    if: needs.resolve.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Create git tag and GitHub release
-        if: needs.resolve.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -120,7 +131,6 @@ jobs:
             --target "${{ github.sha }}"
 
       - name: Record GitHub deployment
-        if: needs.resolve.outputs.should_release == 'true'
         uses: chrnorm/deployment-action@v2
         id: deployment
         with:
@@ -128,10 +138,9 @@ jobs:
           environment: "v${{ needs.resolve.outputs.version }}"
           environment-url: "https://github.com/${{ github.repository }}/pkgs/container/copenai"
           ref: ${{ github.sha }}
-          description: "copenai ${{ needs.resolve.outputs.version }}"
+          description: "copenai ${{ needs.resolve.outputs.version }} (linux/amd64)"
 
       - name: Mark deployment success
-        if: needs.resolve.outputs.should_release == 'true'
         uses: chrnorm/deployment-status@v2
         with:
           token: "${{ github.token }}"
@@ -139,4 +148,61 @@ jobs:
           state: success
           deployment-id: ${{ steps.deployment.outputs.deployment_id }}
           environment-url: "https://github.com/${{ github.repository }}/pkgs/container/copenai"
-          description: "Published ghcr.io/${{ github.repository }}:${{ needs.resolve.outputs.version }}"
+          description: "Published ghcr.io/${{ github.repository }}:${{ needs.resolve.outputs.version }} (linux/amd64)"
+
+  build-arm:
+    needs: [resolve, build-amd, release]
+    if: |
+      always() &&
+      needs.resolve.outputs.should_push == 'true' &&
+      needs.build-amd.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.resolve.outputs.version }}-arm64,enable=${{ needs.resolve.outputs.should_release }}
+            type=sha,prefix=,suffix=-arm64
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Merge amd64 and arm64 into release tags
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          AMD="${IMAGE}@${{ needs.build-amd.outputs.digest }}"
+          ARM="${IMAGE}@${{ steps.build.outputs.digest }}"
+
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            TAG_ARGS+=("-t" "${tag}")
+          done <<< "${{ needs.build-amd.outputs.tags }}"
+
+          docker buildx imagetools create "${TAG_ARGS[@]}" "${AMD}" "${ARM}"
