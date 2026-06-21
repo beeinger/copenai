@@ -4,17 +4,17 @@ use copenai_acp::{
     AgentPrompt, AgentToolEvent, AgentToolEventKind, FinishReason, PromptStreamEvent,
 };
 use copenai_openai::{
-    build_json_schema_prompt, build_prompt_plan, build_schema_retry_prompt, build_tool_system_prompt,
-    from_responses_choice, map_message_content, messages::{truncate_history, usage_char_count}, new_item_id,
-    validate_json_output, MessageContent,
-    OutputItem, ParsedChat, ParsedResponse, ResponseCreateRequest,
-    ResponsesStreamEvent, ToolCall, Usage,
+    build_json_schema_prompt, build_prompt_plan, build_schema_retry_prompt,
+    build_tool_system_prompt, from_responses_choice, map_message_content,
+    messages::{truncate_history, usage_char_count},
+    new_item_id, validate_json_output, MessageContent, OutputItem, ParsedChat, ParsedResponse,
+    ResponseCreateRequest, ResponsesStreamEvent, ToolCall, Usage,
 };
 use futures::StreamExt;
 
 use super::tool_loop::ToolLoopEngine;
-use crate::tools::ToolExecutionMode;
 use crate::state::SharedState;
+use crate::tools::ToolExecutionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IncompleteReason {
@@ -111,13 +111,18 @@ impl ToolOrchestrator {
         };
 
         if request.truncation.as_deref() == Some("auto") {
-            let budget = state.config.server.max_concurrent_agents.saturating_mul(8000);
+            let budget = state
+                .config
+                .server
+                .max_concurrent_agents
+                .saturating_mul(8000);
             truncate_history(&mut chat_like.history, budget);
         }
 
         build_agent_prompt_inner(state, conversation_id, model, &chat_like, &[], &[]).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_responses_turn(
         state: &SharedState,
         request: &ResponseCreateRequest,
@@ -134,8 +139,8 @@ impl ToolOrchestrator {
         let tools = ToolLoopEngine::effective_tools(&parsed.tools, &choice);
         let parallel = request.parallel_tool_calls.unwrap_or(true);
 
-        let prompt = Self::build_responses_prompt(state, request, parsed, conversation_id, model)
-            .await?;
+        let prompt =
+            Self::build_responses_prompt(state, request, parsed, conversation_id, model).await?;
         let events = state
             .supervisor
             .prompt_stream(conversation_id, prompt)
@@ -180,19 +185,17 @@ impl ToolOrchestrator {
                     let calls = tool_engine.parse_calls(&text, &tools, &choice)?;
                     if !calls.is_empty() {
                         if streaming {
-                            if let (Some(tx), Some(mut resp)) = (&event_tx_for_tools, response_obj.clone()) {
+                            if let (Some(tx), Some(mut resp)) =
+                                (&event_tx_for_tools, response_obj.clone())
+                            {
                                 emit_tool_sse_events(tx, &mut resp, &calls).await;
-                                response_obj = Some(resp);
                             }
                         }
                         agent_outputs.extend(ToolLoopEngine::calls_to_output(&calls));
                         text = String::new();
                         incomplete_reason = Some(IncompleteReason::ToolCalls);
                     } else if !text.is_empty() {
-                        agent_outputs.push(OutputItem::message_text(
-                            &text,
-                            &new_item_id("msg"),
-                        ));
+                        agent_outputs.push(OutputItem::message_text(&text, &new_item_id("msg")));
                     }
                 }
                 ToolExecutionMode::Server => {
@@ -229,12 +232,9 @@ impl ToolOrchestrator {
                                         &model_owned,
                                     )
                                     .await?;
-                                    let events = state
-                                        .supervisor
-                                        .prompt_stream(&conv, prompt)
-                                        .await?;
-                                    let (t, _, _, _, _) =
-                                        drain_sync(events, false, false).await?;
+                                    let events =
+                                        state.supervisor.prompt_stream(&conv, prompt).await?;
+                                    let (t, _, _, _, _) = drain_sync(events, false, false).await?;
                                     Ok(t)
                                 })
                             },
@@ -248,10 +248,7 @@ impl ToolOrchestrator {
                 }
             }
         } else if !text.is_empty() {
-            agent_outputs.push(OutputItem::message_text(
-                &text,
-                &new_item_id("msg"),
-            ));
+            agent_outputs.push(OutputItem::message_text(&text, &new_item_id("msg")));
         }
 
         if request.wants_json_schema() {
@@ -261,7 +258,8 @@ impl ToolOrchestrator {
                     Err(first_err) => {
                         let retry_prompt = build_schema_retry_prompt(schema, &first_err);
                         let mut retry_parsed = parsed.clone();
-                        retry_parsed.system = format!("{}\n\n{}", retry_parsed.system, retry_prompt);
+                        retry_parsed.system =
+                            format!("{}\n\n{}", retry_parsed.system, retry_prompt);
                         let retry_agent = Self::build_responses_prompt(
                             state,
                             request,
@@ -285,10 +283,8 @@ impl ToolOrchestrator {
                         }
                         validate_json_output(&text, schema)?;
                         if !text.is_empty() && agent_outputs.is_empty() {
-                            agent_outputs.push(OutputItem::message_text(
-                                &text,
-                                &new_item_id("msg"),
-                            ));
+                            agent_outputs
+                                .push(OutputItem::message_text(&text, &new_item_id("msg")));
                         }
                     }
                 }
@@ -330,22 +326,14 @@ impl ToolOrchestrator {
             extra.push(format!("Tool result for call_id={call_id}: {output}"));
         }
 
-        let prompt = build_agent_prompt_inner(
-            state,
-            conversation_id,
-            model,
-            parsed,
-            &extra,
-            &[],
-        )
-        .await?;
+        let prompt =
+            build_agent_prompt_inner(state, conversation_id, model, parsed, &extra, &[]).await?;
 
         let events = state
             .supervisor
             .prompt_stream(conversation_id, prompt)
             .await?;
-        let (mut text, usage_snap, finish, _, _) =
-            drain_sync(events, false, false).await?;
+        let (mut text, usage_snap, finish, _, _) = drain_sync(events, false, false).await?;
 
         let tool_engine = ToolLoopEngine::new(state.config.responses.clone());
         let mut tool_calls = Vec::new();
@@ -395,12 +383,9 @@ impl ToolOrchestrator {
                                         &[],
                                     )
                                     .await?;
-                                    let events = state
-                                        .supervisor
-                                        .prompt_stream(&conv, prompt)
-                                        .await?;
-                                    let (t, _, _, _, _) =
-                                        drain_sync(events, false, false).await?;
+                                    let events =
+                                        state.supervisor.prompt_stream(&conv, prompt).await?;
+                                    let (t, _, _, _, _) = drain_sync(events, false, false).await?;
                                     Ok(t)
                                 })
                             },
@@ -483,12 +468,8 @@ async fn build_agent_prompt_inner(
     };
     let plan = build_prompt_plan(&chat_like, session_hot);
 
-    let mapped = map_message_content(
-        &state.paths,
-        conversation_id,
-        &parsed.final_user_content,
-    )
-    .await?;
+    let mapped =
+        map_message_content(&state.paths, conversation_id, &parsed.final_user_content).await?;
 
     Ok(AgentPrompt {
         model: model.to_string(),
@@ -684,6 +665,7 @@ async fn drain_stream(
     }
 
     if msg_started {
+        #[allow(clippy::collapsible_match)]
         if let Some(item) = response.output.get_mut(msg_index) {
             if let OutputItem::Message { content, .. } = item {
                 if let Some(copenai_openai::OutputContentPart::OutputText { text: t, .. }) =

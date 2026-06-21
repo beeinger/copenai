@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use copenai_core::config::ResponsesSection;
 use copenai_openai::{
-    ensure_call_ids, filter_tools, from_responses_choice, new_item_id,
-    parse_and_validate_calls, validate_detected_calls, FunctionTool, OutputItem,
-    ParsedFunctionCall, ResolvedToolChoice, ResponsesToolChoice,
+    ensure_call_ids, filter_tools, from_responses_choice, new_item_id, parse_and_validate_calls,
+    validate_detected_calls, FunctionTool, OutputItem, ParsedFunctionCall, ResolvedToolChoice,
+    ResponsesToolChoice,
 };
 use futures::future::join_all;
 use reqwest::Client;
@@ -145,6 +145,7 @@ impl ToolLoopEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_server_loop(
         &self,
         conversation_id: &str,
@@ -153,7 +154,9 @@ impl ToolLoopEngine {
         tools: &[FunctionTool],
         choice: &ResolvedToolChoice,
         parallel: bool,
-        mut prompt_fn: impl FnMut(String) -> std::pin::Pin<
+        mut prompt_fn: impl FnMut(
+            String,
+        ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
         >,
     ) -> Result<(String, Vec<OutputItem>, bool), String> {
@@ -165,8 +168,7 @@ impl ToolLoopEngine {
             let calls = self.parse_calls(&text, tools, choice)?;
             if calls.is_empty() {
                 if !text.is_empty() {
-                    all_outputs
-                        .push(OutputItem::message_text(&text, &new_item_id("msg")));
+                    all_outputs.push(OutputItem::message_text(&text, &new_item_id("msg")));
                 }
                 return Ok((text, all_outputs, false));
             }
@@ -211,10 +213,12 @@ impl ToolLoopEngine {
     ) -> Vec<copenai_openai::InputItem> {
         outputs
             .iter()
-            .map(|(call_id, output)| copenai_openai::InputItem::FunctionCallOutput {
-                call_id: call_id.clone(),
-                output: output.clone(),
-            })
+            .map(
+                |(call_id, output)| copenai_openai::InputItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output: output.clone(),
+                },
+            )
             .collect()
     }
 }

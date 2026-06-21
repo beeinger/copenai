@@ -19,10 +19,7 @@ impl ResponsesOrchestrator {
         tool_header: Option<&str>,
     ) -> Result<CreateOutcome, String> {
         let tool_engine = ToolLoopEngine::new(state.config.responses.clone());
-        let mode = tool_engine.resolve_mode_responses(
-            request.tool_execution_mode(),
-            tool_header,
-        );
+        let mode = tool_engine.resolve_mode_responses(request.tool_execution_mode(), tool_header);
         tool_engine.validate_server_mode(mode)?;
 
         let models = state.models.read().await.clone();
@@ -70,7 +67,7 @@ impl ResponsesOrchestrator {
                 should_store,
             )
             .await?;
-            Ok(CreateOutcome::Json(response))
+            Ok(CreateOutcome::Json(Box::new(response)))
         }
     }
 
@@ -183,20 +180,14 @@ impl ResponsesOrchestrator {
                 Ok(p) => p,
                 Err(e) => {
                     let _ = tx
-                        .send(ResponsesStreamEvent::Failed {
-                            response,
-                            error: e,
-                        })
+                        .send(ResponsesStreamEvent::Failed { response, error: e })
                         .await;
                     return;
                 }
             };
             if let Err(e) = enrich_from_previous(&state, &request, &mut parsed).await {
                 let _ = tx
-                    .send(ResponsesStreamEvent::Failed {
-                        response,
-                        error: e,
-                    })
+                    .send(ResponsesStreamEvent::Failed { response, error: e })
                     .await;
                 return;
             }
@@ -230,24 +221,16 @@ impl ResponsesOrchestrator {
                         });
                     }
                     if store {
-                        let _ = persist_response(
-                            &state,
-                            &response_id,
-                            &response,
-                            &parsed,
-                            &request,
-                        )
-                        .await;
+                        let _ =
+                            persist_response(&state, &response_id, &response, &parsed, &request)
+                                .await;
                     }
                     let _ = tx.send(ResponsesStreamEvent::Completed(response)).await;
                 }
                 Err(e) => {
                     response.status = "failed".into();
                     let _ = tx
-                        .send(ResponsesStreamEvent::Failed {
-                            response,
-                            error: e,
-                        })
+                        .send(ResponsesStreamEvent::Failed { response, error: e })
                         .await;
                 }
             }
@@ -263,7 +246,7 @@ impl ResponsesOrchestrator {
 }
 
 pub enum CreateOutcome {
-    Json(ResponseObject),
+    Json(Box<ResponseObject>),
     Stream(futures::stream::BoxStream<'static, ResponsesStreamEvent>),
 }
 
@@ -359,8 +342,8 @@ fn output_item_to_chain(item: &copenai_openai::OutputItem) -> Option<Value> {
         copenai_openai::OutputItem::Message { role, content, .. } => {
             let text: String = content
                 .iter()
-                .filter_map(|p| match p {
-                    copenai_openai::OutputContentPart::OutputText { text, .. } => Some(text.as_str()),
+                .map(|p| match p {
+                    copenai_openai::OutputContentPart::OutputText { text, .. } => text.as_str(),
                 })
                 .collect();
             if text.is_empty() {

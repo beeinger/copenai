@@ -89,11 +89,9 @@ fn parse_mode_string(s: &str) -> ResolvedToolChoice {
 pub fn filter_tools(tools: &[FunctionTool], choice: &ResolvedToolChoice) -> Vec<FunctionTool> {
     match choice {
         ResolvedToolChoice::None => vec![],
-        ResolvedToolChoice::Named(name) => tools
-            .iter()
-            .filter(|t| t.name == *name)
-            .cloned()
-            .collect(),
+        ResolvedToolChoice::Named(name) => {
+            tools.iter().filter(|t| t.name == *name).cloned().collect()
+        }
         _ => tools.to_vec(),
     }
 }

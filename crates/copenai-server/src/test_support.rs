@@ -48,9 +48,14 @@ impl TestHarness {
     }
 
     pub async fn with_config(response: MockResponse, responses: ResponsesSection) -> Self {
-        let mut config = AppConfig::default();
-        config.responses = responses;
-        Self::with_mock_config(response, config).await
+        Self::with_mock_config(
+            response,
+            AppConfig {
+                responses,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     pub async fn with_webhook_server(
@@ -75,9 +80,11 @@ impl TestHarness {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let mut responses = ResponsesSection::default();
-        responses.tool_execution = "server".into();
-        responses.tool_webhook = format!("http://{addr}/hook");
+        let responses = ResponsesSection {
+            tool_execution: "server".into(),
+            tool_webhook: format!("http://{addr}/hook"),
+            ..Default::default()
+        };
         let harness = Self::with_config(response, responses).await;
         (harness, format!("http://{addr}/hook"))
     }

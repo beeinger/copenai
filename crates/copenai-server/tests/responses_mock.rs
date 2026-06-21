@@ -38,11 +38,8 @@ async fn responses_sync_mock() {
 
 #[tokio::test]
 async fn responses_stream_mock() {
-    let harness = TestHarness::with_mock(MockResponse::Stream(vec![
-        "stream ".into(),
-        "reply".into(),
-    ]))
-    .await;
+    let harness =
+        TestHarness::with_mock(MockResponse::Stream(vec!["stream ".into(), "reply".into()])).await;
     let app = harness.app();
     let body = serde_json::json!({
         "model": "composer-2.5",
@@ -221,7 +218,7 @@ async fn responses_list() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["object"], "list");
-    assert!(json["data"].as_array().unwrap().len() >= 1);
+    assert!(!json["data"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

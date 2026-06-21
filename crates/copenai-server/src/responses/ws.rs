@@ -129,7 +129,10 @@ async fn handle_socket(
                 let id = resp.id.clone();
                 let events = vec![
                     ws_event("response.created", serde_json::json!({ "response": &resp })),
-                    ws_event("response.completed", serde_json::json!({ "response": &resp })),
+                    ws_event(
+                        "response.completed",
+                        serde_json::json!({ "response": &resp }),
+                    ),
                 ];
                 for e in events {
                     let _ = sender.send(Message::Text(e.into())).await;

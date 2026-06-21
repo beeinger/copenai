@@ -17,7 +17,9 @@ use tower_http::trace::TraceLayer;
 
 use crate::responses::{responses_websocket, CreateOutcome, ResponsesOrchestrator};
 use crate::state::SharedState;
-use crate::tools::{calls_to_chat_tool_calls, resolve_mode, ToolExecutionMode, ToolLoopEngine, ToolOrchestrator};
+use crate::tools::{
+    calls_to_chat_tool_calls, resolve_mode, ToolExecutionMode, ToolLoopEngine, ToolOrchestrator,
+};
 
 pub fn router(state: SharedState) -> Router {
     let api = Router::new()
@@ -26,8 +28,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/v1/responses/ws", get(responses_websocket))
         .route(
             "/v1/responses/{response_id}",
-            get(get_response)
-                .delete(delete_response),
+            get(get_response).delete(delete_response),
         )
         .route("/v1/models", get(list_models))
         .route("/v1/files", get(list_files).post(upload_file))
@@ -568,9 +569,7 @@ async fn create_response(
         .and_then(|v| v.to_str().ok());
 
     match ResponsesOrchestrator::create(&state, request, conv_header, tool_header).await {
-        Ok(CreateOutcome::Json(resp)) => {
-            (StatusCode::OK, Json(resp)).into_response()
-        }
+        Ok(CreateOutcome::Json(resp)) => (StatusCode::OK, Json(*resp)).into_response(),
         Ok(CreateOutcome::Stream(events)) => {
             let stream = copenai_openai::responses_sse_stream(events);
             Response::builder()
@@ -626,8 +625,7 @@ async fn list_responses(
     Query(q): Query<copenai_openai::ResponseListQuery>,
 ) -> Response {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
-    match ResponsesOrchestrator::list(&state, limit, q.after.as_deref(), q.order.as_deref()).await
-    {
+    match ResponsesOrchestrator::list(&state, limit, q.after.as_deref(), q.order.as_deref()).await {
         Ok(list) => (StatusCode::OK, Json(list)).into_response(),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }

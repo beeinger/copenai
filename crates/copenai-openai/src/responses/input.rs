@@ -39,7 +39,9 @@ impl Default for InputMessageContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputContentPart {
-    InputText { text: String },
+    InputText {
+        text: String,
+    },
     InputImage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_url: Option<String>,
@@ -67,9 +69,7 @@ pub enum InputContentPart {
 impl InputContentPart {
     pub fn to_content_part(&self) -> ContentPart {
         match self {
-            Self::InputText { text } => ContentPart::Text {
-                text: text.clone(),
-            },
+            Self::InputText { text } => ContentPart::Text { text: text.clone() },
             Self::InputImage { image_url, .. } => ContentPart::ImageUrl {
                 image_url: crate::types::ImageUrl {
                     url: image_url.clone().unwrap_or_default(),
@@ -95,7 +95,10 @@ impl InputItem {
             Self::Message { content, .. } => Some(match content {
                 InputMessageContent::Text(t) => MessageContent::Text(t.clone()),
                 InputMessageContent::Parts(parts) => MessageContent::Parts(
-                    parts.iter().map(InputContentPart::to_content_part).collect(),
+                    parts
+                        .iter()
+                        .map(InputContentPart::to_content_part)
+                        .collect(),
                 ),
             }),
             _ => None,
@@ -111,7 +114,9 @@ impl InputItem {
 
     pub fn function_call_output(&self) -> Option<(&str, &str)> {
         match self {
-            Self::FunctionCallOutput { call_id, output } => Some((call_id.as_str(), output.as_str())),
+            Self::FunctionCallOutput { call_id, output } => {
+                Some((call_id.as_str(), output.as_str()))
+            }
             _ => None,
         }
     }

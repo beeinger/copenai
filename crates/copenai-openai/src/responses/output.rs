@@ -62,12 +62,7 @@ impl OutputItem {
         }
     }
 
-    pub fn function_call(
-        item_id: &str,
-        call_id: &str,
-        name: &str,
-        arguments: &str,
-    ) -> Self {
+    pub fn function_call(item_id: &str, call_id: &str, name: &str, arguments: &str) -> Self {
         Self::FunctionCall {
             id: item_id.to_string(),
             call_id: call_id.to_string(),
@@ -118,9 +113,12 @@ impl OutputItem {
 
     pub fn text_content(&self) -> Option<&str> {
         match self {
-            Self::Message { content, .. } => content.iter().find_map(|c| match c {
-                OutputContentPart::OutputText { text, .. } => Some(text.as_str()),
-            }),
+            Self::Message { content, .. } => content
+                .iter()
+                .map(|c| match c {
+                    OutputContentPart::OutputText { text, .. } => text.as_str(),
+                })
+                .next(),
             _ => None,
         }
     }

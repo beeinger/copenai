@@ -254,7 +254,9 @@ impl ChatCompletionRequest {
 
 impl ChatMessage {
     pub fn content_or_default(&self) -> MessageContent {
-        self.content.clone().unwrap_or(MessageContent::Text(String::new()))
+        self.content
+            .clone()
+            .unwrap_or(MessageContent::Text(String::new()))
     }
 }
 

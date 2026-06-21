@@ -89,10 +89,10 @@ impl ResponseStore {
 
     pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<StoredResponse>> {
         let row = sqlx::query_as::<_, ResponseRow>(&format!("{RESPONSE_SELECT} WHERE id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| CoreError::Other(e.to_string()))?;
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| CoreError::Other(e.to_string()))?;
 
         Ok(row.map(row_to_stored))
     }

@@ -1,7 +1,7 @@
 use crate::multimodal::MappedContent;
 use crate::tools::{
-    format_tool_history, from_chat_choice, parse_chat_tools, filter_tools, ResolvedToolChoice,
-    FunctionTool,
+    filter_tools, format_tool_history, from_chat_choice, parse_chat_tools, FunctionTool,
+    ResolvedToolChoice,
 };
 use crate::types::{ChatCompletionRequest, MessageContent};
 
@@ -53,7 +53,8 @@ pub fn parse_chat_request(request: &ChatCompletionRequest) -> Result<ParsedChat,
     }
 
     let chat_tools = parse_chat_tools(request)?;
-    let tool_choice = from_chat_choice(request.tool_choice.as_ref(), request.function_call.as_ref());
+    let tool_choice =
+        from_chat_choice(request.tool_choice.as_ref(), request.function_call.as_ref());
     let tools = filter_tools(&chat_tools.tools, &tool_choice);
 
     let final_user_idx = request

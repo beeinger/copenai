@@ -169,7 +169,8 @@ mod tests {
     #[test]
     fn detect_tool_calls_array() {
         let tools = vec![FunctionTool::new("a"), FunctionTool::new("b")];
-        let text = r#"{"tool_calls": [{"name": "a", "arguments": {}}, {"name": "b", "arguments": {}}]}"#;
+        let text =
+            r#"{"tool_calls": [{"name": "a", "arguments": {}}, {"name": "b", "arguments": {}}]}"#;
         let calls = detect_tool_calls(text, &tools).unwrap();
         assert_eq!(calls.len(), 2);
     }

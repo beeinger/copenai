@@ -69,7 +69,10 @@ impl MockSupervisor {
                 let mut idx_map = self.sequence_idx.lock().await;
                 let idx = idx_map.entry(conversation_id.to_string()).or_insert(0);
                 let item = items.get(*idx).cloned().unwrap_or_else(|| {
-                    items.last().cloned().unwrap_or(MockResponse::Text(String::new()))
+                    items
+                        .last()
+                        .cloned()
+                        .unwrap_or(MockResponse::Text(String::new()))
                 });
                 *idx = (*idx + 1).min(items.len());
                 item

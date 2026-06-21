@@ -83,7 +83,10 @@ async fn chat_tools_client_sync() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
-    assert_eq!(json["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "get_weather");
+    assert_eq!(
+        json["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "get_weather"
+    );
 }
 
 #[tokio::test]

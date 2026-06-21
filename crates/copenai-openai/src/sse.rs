@@ -6,7 +6,9 @@ use futures::Stream;
 use futures::StreamExt;
 use serde_json::json;
 
-use crate::types::{ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, ChunkDelta, ToolCall, Usage};
+use crate::types::{
+    ChatCompletionChunk, ChatCompletionResponse, ChunkChoice, ChunkDelta, ToolCall, Usage,
+};
 
 pub fn unix_now() -> i64 {
     SystemTime::now()
@@ -19,7 +21,10 @@ pub fn unix_now() -> i64 {
 pub enum StreamEvent {
     Delta(String),
     Usage(Usage),
-    Done { finish_reason: String, usage: Usage },
+    Done {
+        finish_reason: String,
+        usage: Usage,
+    },
     DoneWithTools {
         finish_reason: String,
         usage: Usage,
@@ -45,9 +50,7 @@ pub fn completion_response_with_tools(
             index: 0,
             message: crate::types::AssistantMessage {
                 role: "assistant",
-                content: if tool_calls.is_some() {
-                    None
-                } else if content.is_empty() {
+                content: if tool_calls.is_some() || content.is_empty() {
                     None
                 } else {
                     Some(content.to_string())

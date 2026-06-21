@@ -113,9 +113,8 @@ async fn run_worker_loop(
                             if let ContentBlock::Text(t) = chunk.content {
                                 let guard = sink_notify.lock().await;
                                 if let Some(tx) = guard.as_ref() {
-                                    let _ = tx.unbounded_send(PromptStreamEvent::ReasoningDelta(
-                                        t.text,
-                                    ));
+                                    let _ = tx
+                                        .unbounded_send(PromptStreamEvent::ReasoningDelta(t.text));
                                 }
                             }
                         }
