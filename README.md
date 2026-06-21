@@ -151,6 +151,72 @@ curl -H "Authorization: Bearer $KEY" -F file=@image.png http://127.0.0.1:9241/v1
 - `POST /v1/permissions/{id}/respond` with `{"option_id": "..."}` or `{"cancel": true}`
 - Optional `webhook_url` POST on new permission requests
 
+## Docker
+
+Image: [`ghcr.io/beeinger/copenai`](https://github.com/beeinger/copenai/pkgs/container/copenai)
+
+```bash
+docker run -d --name copenai \
+  -p 9241:9241 \
+  -v copenai-data:/data \
+  -e HOME=/data \
+  -e COPENAI_HOME=/data \
+  -e CURSOR_API_KEY="$CURSOR_API_KEY" \
+  ghcr.io/beeinger/copenai:0.1.0
+```
+
+Browser login instead of API key (session stored on the volume):
+
+```bash
+docker run -it --rm \
+  -v copenai-data:/data \
+  -e HOME=/data \
+  -e COPENAI_HOME=/data \
+  --entrypoint copenai \
+  ghcr.io/beeinger/copenai:0.1.0 auth login
+```
+
+### CI releases
+
+Pushes to **`main`** read `version` from `Cargo.toml`. If git tag `v{version}` does not exist yet, CI:
+
+1. Builds and pushes `ghcr.io/beeinger/copenai:{version}` (and `v{version}`) plus `:latest`
+2. Creates git tag `v{version}` and a GitHub release
+3. Records a GitHub deployment pointing at the container package
+
+Bump `version` in `Cargo.toml` before pushing to `main` to publish a new image.
+
+## Kubernetes
+
+Manifests live in [`k8s/`](k8s/).
+
+| File | Purpose |
+|------|---------|
+| `k8s/deployment.yaml` | API-key auth via `CURSOR_API_KEY` secret |
+| `k8s/deployment-login.yaml` | Cursor CLI browser/device login (no API key) |
+| `k8s/secret.example.yaml` | Template for `copenai-secrets` |
+| `k8s/bootstrap-login.sh` | Apply login deployment + interactive `copenai auth login` |
+
+Pin the image tag to the workspace version (currently `0.1.0`).
+
+**API key:**
+
+```bash
+kubectl apply -f k8s/secret.example.yaml   # set real key first
+kubectl apply -f k8s/deployment.yaml
+kubectl exec -it deploy/copenai -n copenai -- copenai keys add --name default
+kubectl port-forward -n copenai svc/copenai 9241:9241
+```
+
+**Browser login:**
+
+```bash
+./k8s/bootstrap-login.sh
+# or: kubectl apply -f k8s/deployment-login.yaml && kubectl exec -it deploy/copenai -n copenai -- copenai auth login
+```
+
+Data (SQLite, wrapper keys, Cursor OAuth under `.cursor/`) persists on the `copenai-data` PVC at `/data`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,119 @@
+# Example Kubernetes deployment for copenai.
+#
+# Auth options:
+#   - API key: this file + secret.example.yaml (CURSOR_API_KEY)
+#   - Browser login: deployment-login.yaml + bootstrap-login.sh
+#
+# Image tag should match workspace.version in Cargo.toml (currently 0.1.0).
+# Published by CI on main when that version tag does not exist yet.
+#
+# Prerequisites:
+#   1. Image at ghcr.io/beeinger/copenai:<version> (see .github/workflows/docker.yml).
+#   2. Secret with CURSOR_API_KEY (see secret.example.yaml).
+#   3. After first boot, create a wrapper API key for clients:
+#        kubectl exec -it deploy/copenai -n copenai -- copenai keys add --name default
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: copenai
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: copenai-data
+  namespace: copenai
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copenai
+  namespace: copenai
+  labels:
+    app: copenai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: copenai
+  template:
+    metadata:
+      labels:
+        app: copenai
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: copenai
+          image: ghcr.io/beeinger/copenai:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9241
+              protocol: TCP
+          env:
+            - name: COPENAI_HOME
+              value: /data
+            - name: HOME
+              value: /data
+            - name: RUST_LOG
+              value: info
+            - name: CURSOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: copenai-secrets
+                  key: CURSOR_API_KEY
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: copenai-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: copenai
+  namespace: copenai
+  labels:
+    app: copenai
+spec:
+  type: ClusterIP
+  selector:
+    app: copenai
+  ports:
+    - name: http
+      port: 9241
+      targetPort: http
+      protocol: TCP

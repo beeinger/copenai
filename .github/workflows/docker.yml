@@ -1,0 +1,142 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.cargo.outputs.version }}
+      release_tag: ${{ steps.cargo.outputs.release_tag }}
+      should_push: ${{ steps.plan.outputs.should_push }}
+      should_release: ${{ steps.plan.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: cargo
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - id: plan
+        env:
+          RELEASE_TAG: ${{ steps.cargo.outputs.release_tag }}
+        run: |
+          SHOULD_PUSH=false
+          SHOULD_RELEASE=false
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "should_push=${SHOULD_PUSH}" >> "$GITHUB_OUTPUT"
+            echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SHOULD_PUSH=true
+
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            git fetch --tags --force origin
+            if git rev-parse "${RELEASE_TAG}^{commit}" >/dev/null 2>&1; then
+              echo "Tag ${RELEASE_TAG} already exists — skipping version release."
+            else
+              SHOULD_RELEASE=true
+            fi
+          fi
+
+          echo "should_push=${SHOULD_PUSH}" >> "$GITHUB_OUTPUT"
+          echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: needs.resolve.outputs.should_push == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.resolve.outputs.version }},enable=${{ needs.resolve.outputs.should_release }}
+            type=raw,value=${{ needs.resolve.outputs.release_tag }},enable=${{ needs.resolve.outputs.should_release }}
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.resolve.outputs.should_push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create git tag and GitHub release
+        if: needs.resolve.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.resolve.outputs.release_tag }}"
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --target "${{ github.sha }}"
+
+      - name: Record GitHub deployment
+        if: needs.resolve.outputs.should_release == 'true'
+        uses: chrnorm/deployment-action@v2
+        id: deployment
+        with:
+          token: "${{ github.token }}"
+          environment: "v${{ needs.resolve.outputs.version }}"
+          environment-url: "https://github.com/${{ github.repository }}/pkgs/container/copenai"
+          ref: ${{ github.sha }}
+          description: "copenai ${{ needs.resolve.outputs.version }}"
+
+      - name: Mark deployment success
+        if: needs.resolve.outputs.should_release == 'true'
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: "${{ github.token }}"
+          environment: "v${{ needs.resolve.outputs.version }}"
+          state: success
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          environment-url: "https://github.com/${{ github.repository }}/pkgs/container/copenai"
+          description: "Published ghcr.io/${{ github.repository }}:${{ needs.resolve.outputs.version }}"

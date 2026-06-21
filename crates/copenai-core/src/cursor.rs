@@ -107,9 +107,15 @@ impl CursorCommand {
     }
 
     pub async fn login(&self) -> Result<()> {
-        let status = self
-            .base_cmd()
-            .arg("login")
+        let mut cmd = self.base_cmd();
+        cmd.arg("login");
+        if std::env::var("NO_OPEN_BROWSER").is_err()
+            && std::env::var("DISPLAY").is_err()
+            && std::env::var("WAYLAND_DISPLAY").is_err()
+        {
+            cmd.env("NO_OPEN_BROWSER", "1");
+        }
+        let status = cmd
             .status()
             .await
             .map_err(|e| CoreError::CursorCommand(e.to_string()))?;
