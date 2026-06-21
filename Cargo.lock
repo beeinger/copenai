@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-acp"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-e2e"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-openai"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-stream",
  "base64",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-server"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -708,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "copenai-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bcrypt",
  "chrono",
