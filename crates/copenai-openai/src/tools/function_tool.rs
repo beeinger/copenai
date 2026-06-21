@@ -96,18 +96,32 @@ fn parse_chat_tool_entry(item: &Value) -> Result<FunctionTool, String> {
         return parse_legacy_function(func);
     }
 
-    let name = obj
-        .get("name")
+    if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+        return Ok(FunctionTool {
+            tool_type: obj
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("function")
+                .to_string(),
+            name: name.to_string(),
+            description: obj
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            parameters: obj.get("parameters").cloned(),
+            strict: obj.get("strict").and_then(|v| v.as_bool()),
+        });
+    }
+
+    let tool_type = obj
+        .get("type")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "tool missing name".to_string())?;
 
+    // Provider-hosted tools (e.g. OpenAI `web_search_preview`) have no function/name.
     Ok(FunctionTool {
-        tool_type: obj
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("function")
-            .to_string(),
-        name: name.to_string(),
+        tool_type: tool_type.to_string(),
+        name: tool_type.to_string(),
         description: obj
             .get("description")
             .and_then(|v| v.as_str())
@@ -166,6 +180,14 @@ mod tests {
         let parsed = from_chat_request(Some(&tools), None).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].name, "get_weather");
+    }
+
+    #[test]
+    fn parse_hosted_tool_type() {
+        let tool = json!({ "type": "web_search_preview" });
+        let parsed = parse_tool_value(&tool).unwrap();
+        assert_eq!(parsed.name, "web_search_preview");
+        assert_eq!(parsed.tool_type, "web_search_preview");
     }
 
     #[test]

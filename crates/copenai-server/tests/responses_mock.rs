@@ -544,7 +544,7 @@ async fn responses_accepts_chat_style_tools_and_simple_input() {
                 "description": "read a doc",
                 "parameters": { "type": "object", "properties": {} }
             }
-        }],
+        }, { "type": "web_search_preview" }],
         "max_output_tokens": 4096,
         "temperature": 0
     });
