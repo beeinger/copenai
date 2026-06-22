@@ -64,6 +64,10 @@ pub enum InputContentPart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file_id: Option<String>,
     },
+    /// Assistant history items from @ai-sdk/openai multi-turn `/v1/responses` requests.
+    OutputText {
+        text: String,
+    },
 }
 
 impl InputContentPart {
@@ -85,6 +89,7 @@ impl InputContentPart {
                     format: format.clone().unwrap_or_else(|| "wav".into()),
                 },
             },
+            Self::OutputText { text } => ContentPart::Text { text: text.clone() },
         }
     }
 }

@@ -136,4 +136,24 @@ mod tests {
         let parsed = parse_response_request(&req).unwrap();
         assert_eq!(user_text_from_content(&parsed.final_user_content), "hello");
     }
+
+    #[test]
+    fn parse_multi_turn_with_output_text() {
+        let json = serde_json::json!({
+            "model": "composer-2.5",
+            "stream": false,
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "again"}]}
+            ]
+        });
+        let req: ResponseCreateRequest = serde_json::from_value(json).unwrap();
+        let parsed = parse_response_request(&req).unwrap();
+        assert!(parsed.history.iter().any(|t| t.role == "assistant"));
+        assert_eq!(
+            user_text_from_content(&parsed.final_user_content),
+            "again"
+        );
+    }
 }
